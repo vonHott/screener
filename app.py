@@ -366,9 +366,9 @@ with tab1:
     if lista_compras:
         df1 = pd.DataFrame(lista_compras).reset_index(drop=True)
         st.dataframe(
-            df1.style.applymap(
-                lambda v: "background-color:#d4edda" if v == "BC" else "background-color:#fff3cd",
-                subset=["Banda"]
+           df1.style.map(
+    lambda v: "background-color:#d4edda" if v == "BC" else "background-color:#fff3cd",
+    subset=["Banda"]
             ),
             use_container_width=True,
             hide_index=True
