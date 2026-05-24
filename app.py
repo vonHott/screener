@@ -1,11 +1,10 @@
 # ======================================================================
-# SG4 SCREENER — APP STREAMLIT V11 (RSI SIMPLE + ADD + RADAR EXACTO)
+# SG4 SCREENER — APP STREAMLIT V12 (RSI WILDER + ADD + RADAR EXACTO)
 # ======================================================================
-# NOVEDADES V11:
-#   - RSI idéntico a MooMoo (suma simple, no Wilder)
-#   - Radar OJO/BTD con umbrales exactos del Pine
-#   - Nueva pestaña ADD (señales de aumento de posición)
-#   - Sin cambios en los 9 gatillos de entrada originales
+# - RSI Wilder (original, como en V10)
+# - Radar OJO/BTD con umbrales exactos del Pine
+# - Nueva pestaña ADD (señales de aumento)
+# - 9 gatillos de entrada originales
 # ======================================================================
 
 import streamlit as st
@@ -26,7 +25,7 @@ st.set_page_config(
 )
 
 # ======================================================================
-# WATCHLIST BASE
+# WATCHLIST BASE (la misma de siempre)
 # ======================================================================
 TICKERS_DEFAULT = [
     "CHWY", "ALT", "PLTR", "RBRK", "MORN", "CBRS", "ISRG", "MDT",
@@ -53,22 +52,30 @@ TICKERS_DEFAULT = [
 ]
 
 # ======================================================================
-# RSI SIMPLE (IDÉNTICO A MOOMOO)
+# RSI WILDER (exactamente como en tu V10)
 # ======================================================================
-def calcular_rsi_simple(close_series, periodo=14):
-    delta = close_series.diff()
+def calcular_rsi_wilder(close_series, periodo=14):
+    close = close_series.copy().reset_index(drop=True)
+    n = len(close)
+    delta = close.diff()
     gain = delta.clip(lower=0).fillna(0)
     loss = (-delta).clip(lower=0).fillna(0)
-    avg_gain = gain.rolling(periodo).sum()
-    avg_loss = loss.rolling(periodo).sum()
-    # Evitar división por cero
-    avg_loss = avg_loss.replace(0, 1e-8)
-    rs = avg_gain / avg_loss
+    avg_gain = np.zeros(n)
+    avg_loss = np.zeros(n)
+    if n > periodo:
+        avg_gain[periodo] = gain.iloc[1:periodo + 1].mean()
+        avg_loss[periodo] = loss.iloc[1:periodo + 1].mean()
+        for i in range(periodo + 1, n):
+            avg_gain[i] = (avg_gain[i-1] * (periodo-1) + gain.iloc[i]) / periodo
+            avg_loss[i] = (avg_loss[i-1] * (periodo-1) + loss.iloc[i]) / periodo
+    avg_loss_safe = np.where(avg_loss == 0, 1e-8, avg_loss)
+    rs = avg_gain / avg_loss_safe
     rsi = 100 - (100 / (1 + rs))
-    return rsi
+    rsi[:periodo] = np.nan
+    return pd.Series(rsi, index=close_series.index)
 
 # ======================================================================
-# ANALISIS POR TICKER — SG4 + ADD
+# ANALISIS POR TICKER (con RSI Wilder, ADD y radar exacto)
 # ======================================================================
 def analizar_ticker(df, ticker_name):
     df = df.dropna(subset=['Close', 'Volume'])
@@ -100,7 +107,7 @@ def analizar_ticker(df, ticker_name):
     df['TR_V'] = df[['H_L', 'H_PC', 'L_PC']].max(axis=1)
     df['ATR_V'] = df['TR_V'].rolling(14).mean()
 
-    # ADX estándar (14,9)
+    # ADX
     df['HD'] = df['High'] - df['High'].shift(1)
     df['LD'] = df['Low'].shift(1) - df['Low']
     df['DMP_RAW'] = np.where((df['HD'] > 0) & (df['HD'] > df['LD']), df['HD'], 0)
@@ -134,24 +141,21 @@ def analizar_ticker(df, ticker_name):
     )
     df['CROSS_MACD'] = (df['DIF'] > df['DEA']) & (df['DIF'].shift(1) <= df['DEA'].shift(1))
 
-    # RSI SIMPLE (igual que MooMoo)
-    df['OSC'] = calcular_rsi_simple(df['Close'], periodo=14)
+    # RSI WILDER (original)
+    df['OSC'] = calcular_rsi_wilder(df['Close'], periodo=14)
 
     # BOLLINGER Y VOLUMEN
     df['BB_MID'] = df['Close'].rolling(20).mean()
     df['BB_STD'] = df['Close'].rolling(20).std(ddof=0)
     df['BB_DN']  = df['BB_MID'] - (2 * df['BB_STD'])
     df['VOL_MA'] = df['Volume'].rolling(20).mean()
-    # Flags de volumen
     df['VOL_OK']    = df['Volume'] > df['VOL_MA'] * 1.05
     df['VOL_MED']   = df['Volume'] > df['VOL_MA'] * 1.20
     df['VOL_ALT']   = df['Volume'] > df['VOL_MA'] * 1.40
     df['VOL_RELAX'] = df['Volume'] > df['VOL_MA'] * 0.95
     df['VOL_SOFT']  = df['Volume'] > df['VOL_MA'] * 0.90
 
-    # ================================================================
-    # GATILLOS ORIGINALES SG3 Y SG4
-    # ================================================================
+    # ========== GATILLOS (exactamente igual a V10) ==========
     df['S_PULL'] = (
         (df['Low'] < df['MA50'] * 1.015) & (df['Close'] > df['MA50'] * 0.985) &
         df['GIRO_J'] & df['VOL_OK'] & df['FILTRO_BASE']
@@ -198,12 +202,9 @@ def analizar_ticker(df, ticker_name):
         df['VOL_SOFT'] & df['FILTRO_BASE']
     )
 
-    # ================================================================
-    # LOGICA B_RAW (señal de entrada)
-    # ================================================================
+    # Lógica B_RAW
     is_bc  = df['BANDA'] == "BC"
     is_vol = df['BANDA'] == "VOL"
-
     s_bc_valid = (
         df['S_PULL'] | df['S_IMPU'] | df['S_BOLL'] | df['S_SUELO'] |
         df['S_MACD_CROSS'] | df['S_EARLY'] |
@@ -217,45 +218,34 @@ def analizar_ticker(df, ticker_name):
     df['B_RAW'] = (is_bc & s_bc_valid) | (is_vol & s_vol_valid)
 
     # Días consecutivos activa
-    b_raw_list  = df['B_RAW'].tolist()
+    b_raw_list = df['B_RAW'].tolist()
     dias_activa = 0
     for val in reversed(b_raw_list[-5:]):
         if val: dias_activa += 1
-        else:   break
+        else: break
 
     # Gatillos activos hoy
     gatillos = []
     if dias_activa > 0:
         for nombre, col in [
-            ("S_PULL",         "S_PULL"),
-            ("S_IMPU",         "S_IMPU"),
-            ("S_BOLL",         "S_BOLL"),
-            ("S_SUELO",        "S_SUELO"),
-            ("S_MACD_CROSS",   "S_MACD_CROSS"),
-            ("S_EARLY",        "S_EARLY"),
-            ("S_REBOTE_MA50",  "S_REBOTE_MA50"),
-            ("S_REBOTE_MA200", "S_REBOTE_MA200"),
-            ("S_BOLL_SOFT",    "S_BOLL_SOFT"),
+            ("S_PULL","S_PULL"),("S_IMPU","S_IMPU"),("S_BOLL","S_BOLL"),
+            ("S_SUELO","S_SUELO"),("S_MACD_CROSS","S_MACD_CROSS"),
+            ("S_EARLY","S_EARLY"),("S_REBOTE_MA50","S_REBOTE_MA50"),
+            ("S_REBOTE_MA200","S_REBOTE_MA200"),("S_BOLL_SOFT","S_BOLL_SOFT")
         ]:
             if df[col].iloc[-1]: gatillos.append(nombre)
 
-    tp_mult  = 1.6 if df['BANDA'].iloc[-1] == "BC" else 2.2
+    tp_mult = 1.6 if df['BANDA'].iloc[-1] == "BC" else 2.2
     tp_ideal = df['Close'].iloc[-1] + (df['ATR_V'].iloc[-1] * tp_mult)
 
-    # ================================================================
-    # RADAR EXACTO (Pine Script)
-    # ================================================================
+    # ========== RADAR EXACTO (Pine) ==========
     df['OJO'] = (df['OSC'] < 32) & (df['J_V'] < 25) & (df['Close'] < df['BB_DN'])
     df['CRUCE_J'] = (df['J_V'] > 10) & (df['J_V'].shift(1) <= 10)
     df['BTD'] = df['OJO'].shift(1) & df['CRUCE_J'] & df['GIRO_MACD']
-
     ojo_reciente = bool(df['OJO'].iloc[-2:].any())
     btd_reciente = bool(df['BTD'].iloc[-2:].any())
 
-    # ================================================================
-    # ADD (aumento de posición) — sin IS_LONG
-    # ================================================================
-    # ADX_A (periodo 6, aceleración)
+    # ========== ADD (aumento) ==========
     dmp_a = df['DMP_RAW'].rolling(6).sum()
     dmm_a = df['DMM_RAW'].rolling(6).sum()
     tr6 = df['TR_V'].rolling(6).sum().replace(0, 1e-8)
@@ -264,75 +254,51 @@ def analizar_ticker(df, ticker_name):
     adx_a = (abs(pdi_a - mdi_a) / (pdi_a + mdi_a).replace(0, 1e-8) * 100).rolling(6).mean()
     adx_a_accel = (adx_a > adx_a.shift(1)) & (adx_a.shift(1) > adx_a.shift(2))
 
-    # ADD_BC
     add_bc = (
-        (df['BANDA'] == "BC") &
-        (pdi_a > mdi_a) &
-        (adx_a > 28) &
-        adx_a_accel &
-        df['CROSS_KD'] &
-        (df['KVAL'] < 75) &
-        (df['Close'] > df['MA20']) &
-        df['VOL_MED']
+        (df['BANDA'] == "BC") & (pdi_a > mdi_a) & (adx_a > 28) & adx_a_accel &
+        df['CROSS_KD'] & (df['KVAL'] < 75) & (df['Close'] > df['MA20']) & df['VOL_MED']
     )
-    # ADD_VOL
     max_high_3 = df['High'].rolling(3).max().shift(1)
     add_vol = (
-        (df['BANDA'] == "VOL") &
-        (pdi_a > mdi_a) &
-        (adx_a > 32) &
-        adx_a_accel &
-        (df['Close'] > max_high_3) &
-        (df['Close'] > df['MA20']) &
-        df['VOL_ALT']
+        (df['BANDA'] == "VOL") & (pdi_a > mdi_a) & (adx_a > 32) & adx_a_accel &
+        (df['Close'] > max_high_3) & (df['Close'] > df['MA20']) & df['VOL_ALT']
     )
     df['ADD'] = add_bc | add_vol
     add_hoy = bool(df['ADD'].iloc[-1])
 
     return {
-        "Ticker":      ticker_name,
-        "Fecha":       ultima_fecha,
-        "Banda":       df['BANDA'].iloc[-1],
-        "Precio":      round(float(df['Close'].iloc[-1]), 2),
-        "RSI":         round(float(df['OSC'].iloc[-1]), 2),
-        "ADX":         round(float(df['ADX_V'].iloc[-1]), 2),
-        "J_V":         round(float(df['J_V'].iloc[-1]), 2),
-        "BB_DN":       round(float(df['BB_DN'].iloc[-1]), 2),
-        "Dias_Activa": dias_activa,
-        "Gatillos":    ", ".join(gatillos) if gatillos else "—",
-        "TP1":         round(float(tp_ideal), 2),
-        "Radar_OJO":   ojo_reciente,
-        "Radar_BTD":   btd_reciente,
-        "ADD":         add_hoy,
-        "ADX_A":       round(float(adx_a.iloc[-1]), 2),
-        "KVAL":        round(float(df['KVAL'].iloc[-1]), 2),
-        "Volumen_MA":  round(float(df['VOL_MA'].iloc[-1]), 0),
-        "Volumen":     round(float(df['Volume'].iloc[-1]), 0),
+        "Ticker": ticker_name, "Fecha": ultima_fecha, "Banda": df['BANDA'].iloc[-1],
+        "Precio": round(float(df['Close'].iloc[-1]), 2),
+        "RSI": round(float(df['OSC'].iloc[-1]), 2),
+        "ADX": round(float(df['ADX_V'].iloc[-1]), 2),
+        "J_V": round(float(df['J_V'].iloc[-1]), 2),
+        "BB_DN": round(float(df['BB_DN'].iloc[-1]), 2),
+        "Dias_Activa": dias_activa, "Gatillos": ", ".join(gatillos) if gatillos else "—",
+        "TP1": round(float(tp_ideal), 2),
+        "Radar_OJO": ojo_reciente, "Radar_BTD": btd_reciente,
+        "ADD": add_hoy, "ADX_A": round(float(adx_a.iloc[-1]), 2),
+        "KVAL": round(float(df['KVAL'].iloc[-1]), 2),
+        "Volumen_MA": round(float(df['VOL_MA'].iloc[-1]), 0),
+        "Volumen": round(float(df['Volume'].iloc[-1]), 0),
     }, None
 
 # ======================================================================
-# SIDEBAR (igual que antes)
+# SIDEBAR Y MAIN (igual que antes, con 4 pestañas)
 # ======================================================================
 with st.sidebar:
     st.title("Configuracion SG4")
-    periodo    = st.selectbox("Periodo historico", ["2y","1y","6mo"], index=0)
+    periodo = st.selectbox("Periodo historico", ["2y","1y","6mo"], index=0)
     rsi_umbral = st.slider("Umbral RSI sobreventa", 25, 45, 33)
-    dias_max   = st.slider("Señal activa max. dias", 1, 5, 3)
+    dias_max = st.slider("Señal activa max. dias", 1, 5, 3)
     st.markdown("---")
     st.markdown("**Watchlist personalizada**")
-    tickers_input = st.text_area(
-        "Un ticker por linea o separado por comas (vacio = lista base)",
-        height=140, placeholder="AAPL\nNVDA\nTSLA"
-    )
+    tickers_input = st.text_area("Un ticker por linea o separado por comas", height=140, placeholder="AAPL\nNVDA\nTSLA")
     st.markdown("---")
-    st.caption("SG4 v11 · RSI Simple (MooMoo) · ADD · Radar exacto")
+    st.caption("SG4 v12 · RSI Wilder · ADD · Radar exacto")
     ejecutar = st.button("🚀 Ejecutar escaner", use_container_width=True, type="primary")
 
-# ======================================================================
-# MAIN
-# ======================================================================
 st.title("📊 SG4 — Santo Grial 4 · Screener")
-st.caption("Sistema KW-DNA · BC/VOL Adaptativo · RSI Simple (MooMoo) · ADD · Radar exacto · v11.0")
+st.caption("Sistema KW-DNA · RSI Wilder · ADD · Radar exacto · v12.0")
 
 if not ejecutar:
     st.info("Configura los parametros en la barra lateral y presiona Ejecutar escaner.")
@@ -346,30 +312,28 @@ if not ejecutar:
 | S_SUELO | RSI+KDJ sobreventa extrema + giro MACD | BC+VOL | 90% |
 | S_MACD_CROSS | Cruce DIF/DEA bajo cero con momentum | BC+VOL | 105% |
 | S_EARLY | Cruce KD en sobreventa anticipado | BC+VOL | 90% |
-| **S_REBOTE_MA50** | Rebote limpio en MA50, entre BB_DN y BB_MID | Solo BC | 95% |
-| **S_REBOTE_MA200** | Rebote en MA200, soporte dinamico principal | BC+VOL | 95% |
-| **S_BOLL_SOFT** | Rebote BB inferior sin GIRO_MACD | BC+VOL | 90% |
-| **ADD (nuevo)** | Aumento de posicion (ADX acelerado + cruce K/D + volumen alto) | BC/VOL | 120%/140% |
+| S_REBOTE_MA50 | Rebote limpio en MA50, entre BB_DN y BB_MID | Solo BC | 95% |
+| S_REBOTE_MA200 | Rebote en MA200, soporte dinamico principal | BC+VOL | 95% |
+| S_BOLL_SOFT | Rebote BB inferior sin GIRO_MACD | BC+VOL | 90% |
+| **ADD** | Aumento de posicion (ADX acelerado + cruce K/D + volumen alto) | BC/VOL | 120%/140% |
         """)
     st.stop()
 
-# Resolver watchlist
+# Watchlist
 if tickers_input.strip():
     tickers = [t.strip().upper() for t in tickers_input.replace(',','\n').splitlines() if t.strip()]
     tickers = list(dict.fromkeys(tickers))
 else:
     tickers = TICKERS_DEFAULT
 
-# ======================================================================
-# EJECUCION
-# ======================================================================
+# Ejecucion
 lista_compras, lista_rsi, lista_radar, lista_add, lista_desc = [], [], [], [], []
 progreso = st.progress(0, text="Iniciando...")
 col1, col2, col3, col4 = st.columns(4)
 m_compras = col1.empty()
-m_rsi     = col2.empty()
-m_radar   = col3.empty()
-m_add     = col4.empty()
+m_rsi = col2.empty()
+m_radar = col3.empty()
+m_add = col4.empty()
 
 for idx, ticker in enumerate(tickers):
     pct = int((idx + 1) / len(tickers) * 100)
@@ -382,7 +346,7 @@ for idx, ticker in enumerate(tickers):
     try:
         df = yf.download(ticker, period=periodo, progress=False, auto_adjust=True)
         if df.empty:
-            lista_desc.append({"Ticker": ticker, "Motivo": "Sin datos en yfinance"})
+            lista_desc.append({"Ticker": ticker, "Motivo": "Sin datos"})
             continue
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
@@ -392,160 +356,94 @@ for idx, ticker in enumerate(tickers):
             lista_desc.append({"Ticker": ticker, "Motivo": motivo})
             continue
 
-        # 1) Compras frescas
+        # Compras frescas
         if 0 < datos["Dias_Activa"] <= dias_max:
-            estado_str = "Dia 1" if datos["Dias_Activa"] == 1 else f"Activa {datos['Dias_Activa']}d"
             lista_compras.append({
-                "Ticker":     datos["Ticker"],
-                "Fecha":      datos["Fecha"],
-                "Banda":      datos["Banda"],
-                "Antiguedad": estado_str,
-                "Gatillos":   datos["Gatillos"],
-                "Precio":     datos["Precio"],
-                "RSI":        datos["RSI"],
-                "ADX":        datos["ADX"],
-                "TP1":        datos["TP1"],
+                "Ticker": datos["Ticker"], "Fecha": datos["Fecha"], "Banda": datos["Banda"],
+                "Antiguedad": "Dia 1" if datos["Dias_Activa"]==1 else f"Activa {datos['Dias_Activa']}d",
+                "Gatillos": datos["Gatillos"], "Precio": datos["Precio"],
+                "RSI": datos["RSI"], "ADX": datos["ADX"], "TP1": datos["TP1"]
             })
 
-        # 2) Sobreventa RSI
+        # Sobreventa
         if datos["RSI"] < rsi_umbral:
             lista_rsi.append({
-                "Ticker": datos["Ticker"],
-                "Fecha":  datos["Fecha"],
-                "Banda":  datos["Banda"],
-                "Precio": datos["Precio"],
-                "RSI":    datos["RSI"],
-                "J_V":    datos["J_V"],
-                "ADX":    datos["ADX"],
+                "Ticker": datos["Ticker"], "Fecha": datos["Fecha"], "Banda": datos["Banda"],
+                "Precio": datos["Precio"], "RSI": datos["RSI"], "J_V": datos["J_V"], "ADX": datos["ADX"]
             })
 
-        # 3) Radar OJO/BTD
+        # Radar
         if datos["Radar_BTD"]:
             lista_radar.append({
-                "Ticker": datos["Ticker"],
-                "Senal":  "🟢 BTD",
-                "Banda":  datos["Banda"],
-                "Precio": datos["Precio"],
-                "RSI":    datos["RSI"],
-                "J_V":    datos["J_V"],
-                "BB_DN":  datos["BB_DN"],
+                "Ticker": datos["Ticker"], "Senal": "🟢 BTD", "Banda": datos["Banda"],
+                "Precio": datos["Precio"], "RSI": datos["RSI"], "J_V": datos["J_V"], "BB_DN": datos["BB_DN"]
             })
         elif datos["Radar_OJO"]:
             lista_radar.append({
-                "Ticker": datos["Ticker"],
-                "Senal":  "🟡 OJO",
-                "Banda":  datos["Banda"],
-                "Precio": datos["Precio"],
-                "RSI":    datos["RSI"],
-                "J_V":    datos["J_V"],
-                "BB_DN":  datos["BB_DN"],
+                "Ticker": datos["Ticker"], "Senal": "🟡 OJO", "Banda": datos["Banda"],
+                "Precio": datos["Precio"], "RSI": datos["RSI"], "J_V": datos["J_V"], "BB_DN": datos["BB_DN"]
             })
 
-        # 4) ADD (aumento)
+        # ADD
         if datos["ADD"]:
             lista_add.append({
-                "Ticker":   datos["Ticker"],
-                "Banda":    datos["Banda"],
-                "Precio":   datos["Precio"],
-                "ADX_A":    datos["ADX_A"],
-                "KVAL":     datos["KVAL"],
-                "Volumen":  datos["Volumen"],
-                "Vol_MA":   datos["Volumen_MA"],
-                "RSI":      datos["RSI"],
+                "Ticker": datos["Ticker"], "Banda": datos["Banda"], "Precio": datos["Precio"],
+                "ADX_A": datos["ADX_A"], "KVAL": datos["KVAL"],
+                "Volumen": datos["Volumen"], "Vol_MA": datos["Volumen_MA"], "RSI": datos["RSI"]
             })
-
     except Exception as e:
         lista_desc.append({"Ticker": ticker, "Motivo": str(e)[:80]})
 
 progreso.empty()
 st.success(f"✅ Escaner completado — {len(tickers)} tickers procesados")
-m_compras.metric("🚀 Compras frescas", len(lista_compras))
-m_rsi.metric(f"📉 RSI < {rsi_umbral}", len(lista_rsi))
-m_radar.metric("🎯 Radar OJO/BTD", len(lista_radar))
-m_add.metric("➕ ADD", len(lista_add))
 
-# ======================================================================
-# TABS (ahora 4)
-# ======================================================================
+# Mostrar 4 pestañas
 tab1, tab2, tab3, tab4 = st.tabs([
     f"🚀 Compras frescas ({len(lista_compras)})",
     f"📉 Sobreventa RSI ({len(lista_rsi)})",
     f"🎯 Radar OJO/BTD ({len(lista_radar)})",
-    f"➕ ADD (aumento) ({len(lista_add)})",
+    f"➕ ADD ({len(lista_add)})"
 ])
 
 with tab1:
-    st.subheader("Senales activas en los ultimos 1-3 dias")
     if lista_compras:
         df1 = pd.DataFrame(lista_compras).reset_index(drop=True)
-        for c in ["Precio", "RSI", "ADX", "TP1"]:
-            df1[c] = df1[c].round(2)
-        st.dataframe(
-            df1.style.map(
-                lambda v: "background-color:#1a3d2b" if v == "BC" else "background-color:#3d2e0a",
-                subset=["Banda"]
-            ),
-            use_container_width=True, hide_index=True
-        )
-        st.download_button("⬇️ Descargar CSV", df1.to_csv(index=False).encode("utf-8"),
-                           "compras_sg4_v11.csv", "text/csv")
-    else:
-        st.info("Ninguna compra fresca reciente.")
+        for c in ["Precio","RSI","ADX","TP1"]: df1[c] = df1[c].round(2)
+        st.dataframe(df1.style.map(lambda v: "background-color:#1a3d2b" if v=="BC" else "background-color:#3d2e0a", subset=["Banda"]), use_container_width=True, hide_index=True)
+        st.download_button("⬇️ CSV", df1.to_csv(index=False).encode("utf-8"), "compras_sg4_v12.csv")
+    else: st.info("Ninguna compra fresca.")
 
 with tab2:
-    st.subheader(f"Activos con RSI Simple < {rsi_umbral}")
     if lista_rsi:
         df2 = pd.DataFrame(lista_rsi).sort_values("RSI").reset_index(drop=True)
-        for c in ["Precio", "RSI", "J_V", "ADX"]:
-            df2[c] = df2[c].round(2)
+        for c in ["Precio","RSI","J_V","ADX"]: df2[c] = df2[c].round(2)
         st.dataframe(df2, use_container_width=True, hide_index=True)
-        st.download_button("⬇️ Descargar CSV", df2.to_csv(index=False).encode("utf-8"),
-                           "sobreventa_sg4_v11.csv", "text/csv")
-    else:
-        st.info("Ningun activo en sobreventa extrema hoy.")
+        st.download_button("⬇️ CSV", df2.to_csv(index=False).encode("utf-8"), "sobreventa_sg4_v12.csv")
+    else: st.info("Ningun activo en sobreventa.")
 
 with tab3:
-    st.subheader("Radar temprano — formacion de suelo (OJO/BTD exacto)")
     if lista_radar:
         df3 = pd.DataFrame(lista_radar)
         df3["_ord"] = df3["Senal"].apply(lambda x: 0 if "BTD" in x else 1)
         df3 = df3.sort_values(["_ord","RSI"]).drop(columns="_ord").reset_index(drop=True)
-        for c in ["Precio", "RSI", "J_V", "BB_DN"]:
-            df3[c] = df3[c].round(2)
+        for c in ["Precio","RSI","J_V","BB_DN"]: df3[c] = df3[c].round(2)
         st.dataframe(df3, use_container_width=True, hide_index=True)
-        st.download_button("⬇️ Descargar CSV", df3.to_csv(index=False).encode("utf-8"),
-                           "radar_sg4_v11.csv", "text/csv")
-    else:
-        st.info("Sin alertas tempranas de formacion de suelo.")
+        st.download_button("⬇️ CSV", df3.to_csv(index=False).encode("utf-8"), "radar_sg4_v12.csv")
+    else: st.info("Sin alertas de suelo.")
 
 with tab4:
-    st.subheader("Señales de aumento (ADD) — ADX acelerado + volumen alto")
     if lista_add:
-        df4 = pd.DataFrame(lista_add)
-        # Ordenar por ADX_A descendente
-        df4 = df4.sort_values("ADX_A", ascending=False).reset_index(drop=True)
-        for c in ["Precio", "ADX_A", "KVAL", "RSI"]:
-            df4[c] = df4[c].round(2)
-        # Formatear volumen
+        df4 = pd.DataFrame(lista_add).sort_values("ADX_A", ascending=False).reset_index(drop=True)
+        for c in ["Precio","ADX_A","KVAL","RSI"]: df4[c] = df4[c].round(2)
         df4["Volumen"] = df4["Volumen"].apply(lambda x: f"{x:,.0f}")
         df4["Vol_MA"] = df4["Vol_MA"].apply(lambda x: f"{x:,.0f}")
-        st.dataframe(
-            df4.style.map(
-                lambda v: "background-color:#1a3d2b" if v == "BC" else "background-color:#3d2e0a",
-                subset=["Banda"]
-            ),
-            use_container_width=True, hide_index=True
-        )
-        st.download_button("⬇️ Descargar CSV", df4.to_csv(index=False).encode("utf-8"),
-                           "add_sg4_v11.csv", "text/csv")
-    else:
-        st.info("No se detectaron señales ADD en esta sesión.")
+        st.dataframe(df4.style.map(lambda v: "background-color:#1a3d2b" if v=="BC" else "background-color:#3d2e0a", subset=["Banda"]), use_container_width=True, hide_index=True)
+        st.download_button("⬇️ CSV", df4.to_csv(index=False).encode("utf-8"), "add_sg4_v12.csv")
+    else: st.info("No se detectaron señales ADD.")
 
-# DESCARTADOS
 if lista_desc:
-    with st.expander(f"⚠️ Tickers descartados ({len(lista_desc)})", expanded=False):
-        df5 = pd.DataFrame(lista_desc).reset_index(drop=True)
-        st.dataframe(df5, use_container_width=True, hide_index=True)
+    with st.expander(f"⚠️ Descartados ({len(lista_desc)})", expanded=False):
+        st.dataframe(pd.DataFrame(lista_desc), use_container_width=True, hide_index=True)
 
 st.markdown("---")
-st.caption("SG4 Screener v11 · RSI simple (MooMoo) · Radar exacto · ADD · Solo fines educativos.")
+st.caption("SG4 v12 · RSI Wilder (original) · Radar exacto · ADD · Solo fines educativos.")
