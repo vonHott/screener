@@ -1,8 +1,11 @@
 # ======================================================================
-# SG3 SCREENER — APP STREAMLIT V9.1
+# SG4 SCREENER — APP STREAMLIT V10
 # ======================================================================
-# CAMBIOS V9.1:
-#   - Numeros con 2 decimales en todas las tablas
+# NOVEDADES V10 (SG4):
+#   - Nuevo gatillo S_REBOTE_MA200: rebote en MA200
+#   - Nuevo gatillo S_BOLL_SOFT: rebote BB inferior sin GIRO_MACD
+#   - S_REBOTE_MA50 mejorado
+#   - Sin !pip install ni IPython (limpio para Streamlit Cloud)
 # ======================================================================
 
 import streamlit as st
@@ -16,7 +19,7 @@ warnings.filterwarnings('ignore')
 # CONFIGURACION
 # ======================================================================
 st.set_page_config(
-    page_title="SG3 Screener",
+    page_title="SG4 Screener",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -73,7 +76,7 @@ def calcular_rsi_wilder(close_series, periodo=14):
     return pd.Series(rsi, index=close_series.index)
 
 # ======================================================================
-# ANALISIS POR TICKER
+# ANALISIS POR TICKER — SG4
 # ======================================================================
 def analizar_ticker(df, ticker_name):
     df = df.dropna(subset=['Close', 'Volume'])
@@ -94,6 +97,7 @@ def analizar_ticker(df, ticker_name):
     df['MA50']  = df['Close'].ewm(span=50,  adjust=False).mean()
     df['MA200'] = df['Close'].ewm(span=200, adjust=False).mean()
     df['F_BAJISTA']   = df['Close'] < df['MA200']
+    df['F_ALCISTA']   = df['Close'] > df['MA200']
     df['MA20_UP']     = df['MA20'] > df['MA20'].shift(1)
     df['FILTRO_BASE'] = df['Close'] >= df['MA200']
 
@@ -145,7 +149,9 @@ def analizar_ticker(df, ticker_name):
     df['BB_DN']  = df['BB_MID'] - (2 * df['BB_STD'])
     df['VOL_MA'] = df['Volume'].rolling(20).mean()
 
-    # GATILLOS ORIGINALES
+    # ================================================================
+    # GATILLOS ORIGINALES SG3
+    # ================================================================
     df['S_PULL'] = (
         (df['Low'] < df['MA50'] * 1.015) & (df['Close'] > df['MA50'] * 0.985) &
         df['GIRO_J'] & (df['Volume'] > df['VOL_MA'] * 1.05) & df['FILTRO_BASE']
@@ -179,7 +185,11 @@ def analizar_ticker(df, ticker_name):
         (df['Volume'] > df['VOL_MA'] * 0.9) & df['FILTRO_BASE']
     )
 
-    # NUEVO V9 — S_REBOTE_MA50 (solo BC, volumen relajado)
+    # ================================================================
+    # NUEVOS GATILLOS SG4
+    # ================================================================
+
+    # S_REBOTE_MA50: rebote limpio en MA50, solo BC, precio entre BB_DN y BB_MID
     df['S_REBOTE_MA50'] = (
         (df['Low'] <= df['MA50'] * 1.008) &
         (df['Close'] > df['MA50']) &
@@ -187,21 +197,48 @@ def analizar_ticker(df, ticker_name):
         (df['Close'] < df['BB_MID']) &
         df['GIRO_J'] &
         df['MA20_UP'] &
-        df['FILTRO_BASE'] &
+        df['F_ALCISTA'] &
         (df['Volume'] > df['VOL_MA'] * 0.95)
     )
 
+    # S_REBOTE_MA200: rebote en MA200, soporte dinamico principal, BC y VOL
+    df['S_REBOTE_MA200'] = (
+        (df['Low'] <= df['MA200'] * 1.01) &
+        (df['Close'] > df['MA200']) &
+        (df['Close'] > df['Low'].shift(1)) &
+        df['GIRO_J'] &
+        df['MA20_UP'] &
+        (df['Volume'] > df['VOL_MA'] * 0.95)
+    )
+
+    # S_BOLL_SOFT: rebote BB inferior sin GIRO_MACD ni VOL fuerte, BC y VOL
+    df['S_BOLL_SOFT'] = (
+        (df['Low'].shift(1) <= df['BB_DN']) &
+        (df['Close'] > df['BB_DN']) &
+        (df['Close'] > df['Low'].shift(1)) &
+        df['GIRO_J'] &
+        (df['Volume'] > df['VOL_MA'] * 0.9) &
+        df['FILTRO_BASE']
+    )
+
+    # ================================================================
     # B_RAW POR BANDA
+    # S_REBOTE_MA50  → solo BC
+    # S_REBOTE_MA200 → BC y VOL
+    # S_BOLL_SOFT    → BC y VOL
+    # ================================================================
     is_bc  = df['BANDA'] == "BC"
     is_vol = df['BANDA'] == "VOL"
+
     s_bc_valid = (
-        df['S_PULL'] | df['S_IMPU'] | df['S_BOLL'] |
-        df['S_SUELO'] | df['S_MACD_CROSS'] | df['S_EARLY'] |
-        df['S_REBOTE_MA50']
+        df['S_PULL'] | df['S_IMPU'] | df['S_BOLL'] | df['S_SUELO'] |
+        df['S_MACD_CROSS'] | df['S_EARLY'] |
+        df['S_REBOTE_MA50'] | df['S_REBOTE_MA200'] | df['S_BOLL_SOFT']
     )
     s_vol_valid = (
         df['S_IMPU'] | df['S_BOLL'] | df['S_SUELO'] |
-        df['S_MACD_CROSS'] | df['S_EARLY']
+        df['S_MACD_CROSS'] | df['S_EARLY'] |
+        df['S_REBOTE_MA200'] | df['S_BOLL_SOFT']
     )
     df['B_RAW'] = (is_bc & s_bc_valid) | (is_vol & s_vol_valid)
 
@@ -216,9 +253,15 @@ def analizar_ticker(df, ticker_name):
     gatillos = []
     if dias_activa > 0:
         for nombre, col in [
-            ("S_PULL","S_PULL"), ("S_IMPU","S_IMPU"), ("S_BOLL","S_BOLL"),
-            ("S_SUELO","S_SUELO"), ("S_MACD_CROSS","S_MACD_CROSS"),
-            ("S_EARLY","S_EARLY"), ("S_REBOTE_MA50","S_REBOTE_MA50"),
+            ("S_PULL",         "S_PULL"),
+            ("S_IMPU",         "S_IMPU"),
+            ("S_BOLL",         "S_BOLL"),
+            ("S_SUELO",        "S_SUELO"),
+            ("S_MACD_CROSS",   "S_MACD_CROSS"),
+            ("S_EARLY",        "S_EARLY"),
+            ("S_REBOTE_MA50",  "S_REBOTE_MA50"),
+            ("S_REBOTE_MA200", "S_REBOTE_MA200"),
+            ("S_BOLL_SOFT",    "S_BOLL_SOFT"),
         ]:
             if df[col].iloc[-1]: gatillos.append(nombre)
 
@@ -262,7 +305,7 @@ def analizar_ticker(df, ticker_name):
 # SIDEBAR
 # ======================================================================
 with st.sidebar:
-    st.title("Configuracion SG3")
+    st.title("Configuracion SG4")
     periodo    = st.selectbox("Periodo historico", ["2y","1y","6mo"], index=0)
     rsi_umbral = st.slider("Umbral RSI sobreventa", 25, 45, 33)
     dias_max   = st.slider("Señal activa max. dias", 1, 5, 3)
@@ -273,28 +316,30 @@ with st.sidebar:
         height=140, placeholder="AAPL\nNVDA\nTSLA"
     )
     st.markdown("---")
-    st.caption("SG3 v9.1 · RSI Wilder · BC/VOL Adaptativo")
+    st.caption("SG4 v10 · RSI Wilder · BC/VOL Adaptativo · 9 Gatillos")
     ejecutar = st.button("🚀 Ejecutar escaner", use_container_width=True, type="primary")
 
 # ======================================================================
 # MAIN
 # ======================================================================
-st.title("📊 SG3 — Santo Grial 3 · Screener")
-st.caption("Sistema KW-DNA · BC/VOL Adaptativo · RSI Wilder · 7 Gatillos · v9.1")
+st.title("📊 SG4 — Santo Grial 4 · Screener")
+st.caption("Sistema KW-DNA · BC/VOL Adaptativo · RSI Wilder · 9 Gatillos · v10.0")
 
 if not ejecutar:
     st.info("Configura los parametros en la barra lateral y presiona Ejecutar escaner.")
-    with st.expander("📖 Gatillos del sistema", expanded=False):
+    with st.expander("📖 Gatillos del sistema SG4", expanded=False):
         st.markdown("""
-| Gatillo | Descripcion | Volumen min |
-|---|---|---|
-| S_PULL | Pullback a MA50 con rebote y KDJ girando | 105% |
-| S_IMPU | Ruptura de maximos con ADX fuerte | 105% |
-| S_BOLL | Rebote desde banda inferior Bollinger | 105% |
-| S_SUELO | RSI + KDJ sobreventa extrema con giro MACD | 90% |
-| S_MACD_CROSS | Cruce DIF/DEA bajo cero con momentum | 105% |
-| S_EARLY | Cruce KD en sobreventa antes de confirmacion | 90% |
-| **S_REBOTE_MA50** | Rebote limpio en MA50, solo BC | 95% |
+| Gatillo | Descripcion | Banda | Vol min |
+|---|---|---|---|
+| S_PULL | Pullback a MA50 con rebote y KDJ girando | BC | 105% |
+| S_IMPU | Ruptura de maximos con ADX fuerte | BC+VOL | 105% |
+| S_BOLL | Rebote desde BB inferior + GIRO_MACD | BC+VOL | 105% |
+| S_SUELO | RSI+KDJ sobreventa extrema + giro MACD | BC+VOL | 90% |
+| S_MACD_CROSS | Cruce DIF/DEA bajo cero con momentum | BC+VOL | 105% |
+| S_EARLY | Cruce KD en sobreventa anticipado | BC+VOL | 90% |
+| **S_REBOTE_MA50** | Rebote limpio en MA50, entre BB_DN y BB_MID | Solo BC | 95% |
+| **S_REBOTE_MA200** | Rebote en MA200, soporte dinamico principal | BC+VOL | 95% |
+| **S_BOLL_SOFT** | Rebote BB inferior sin GIRO_MACD | BC+VOL | 90% |
         """)
     st.stop()
 
@@ -416,7 +461,7 @@ with tab1:
             use_container_width=True, hide_index=True
         )
         st.download_button("⬇️ Descargar CSV", df1.to_csv(index=False).encode("utf-8"),
-                           "compras_sg3_v9.csv", "text/csv")
+                           "compras_sg4_v10.csv", "text/csv")
     else:
         st.info("Ninguna compra fresca reciente.")
 
@@ -428,7 +473,7 @@ with tab2:
             df2[c] = df2[c].round(2)
         st.dataframe(df2, use_container_width=True, hide_index=True)
         st.download_button("⬇️ Descargar CSV", df2.to_csv(index=False).encode("utf-8"),
-                           "sobreventa_sg3_v9.csv", "text/csv")
+                           "sobreventa_sg4_v10.csv", "text/csv")
     else:
         st.info("Ningun activo en sobreventa extrema hoy.")
 
@@ -442,7 +487,7 @@ with tab3:
             df3[c] = df3[c].round(2)
         st.dataframe(df3, use_container_width=True, hide_index=True)
         st.download_button("⬇️ Descargar CSV", df3.to_csv(index=False).encode("utf-8"),
-                           "radar_sg3_v9.csv", "text/csv")
+                           "radar_sg4_v10.csv", "text/csv")
     else:
         st.info("Sin alertas tempranas de formacion de suelo.")
 
@@ -453,4 +498,4 @@ if lista_desc:
         st.dataframe(df4, use_container_width=True, hide_index=True)
 
 st.markdown("---")
-st.caption("SG3 Screener v9.1 · RSI Wilder sincronizado con Moomoo/TradingView · Solo con fines educativos.")
+st.caption("SG4 Screener v10 · RSI Wilder sincronizado con Moomoo/TradingView · Solo con fines educativos.")
