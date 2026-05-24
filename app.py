@@ -10,7 +10,7 @@
 #   - RSI Wilder exacto (= Moomoo/TradingView)
 #   - Download 2y para calentamiento suficiente
 # ======================================================================
-!pip install yfinance pandas numpy -q
+
 
 import yfinance as yf
 import pandas as pd
