@@ -1,10 +1,10 @@
 # ======================================================================
-# SG4 SCREENER — APP STREAMLIT V12 (RSI WILDER + ADD + RADAR EXACTO)
+# SG4 SCREENER — APP STREAMLIT V11
 # ======================================================================
-# - RSI Wilder (original, como en V10)
-# - Radar OJO/BTD con umbrales exactos del Pine
-# - Nueva pestaña ADD (señales de aumento)
-# - 9 gatillos de entrada originales
+# NOVEDADES V11:
+#   - Put Wall, Call Wall y contexto GEX calculado desde yfinance
+#   - Interpretacion de 3 palabras en las 4 secciones
+#   - Gamma Flip aproximado (strike con mayor OI neto puts-calls)
 # ======================================================================
 
 import streamlit as st
@@ -25,7 +25,7 @@ st.set_page_config(
 )
 
 # ======================================================================
-# WATCHLIST BASE (la misma de siempre)
+# WATCHLIST BASE
 # ======================================================================
 TICKERS_DEFAULT = [
     "CHWY", "ALT", "PLTR", "RBRK", "MORN", "CBRS", "ISRG", "MDT",
@@ -52,7 +52,7 @@ TICKERS_DEFAULT = [
 ]
 
 # ======================================================================
-# RSI WILDER (exactamente como en tu V10)
+# RSI WILDER EXACTO (= MOOMOO / TRADINGVIEW)
 # ======================================================================
 def calcular_rsi_wilder(close_series, periodo=14):
     close = close_series.copy().reset_index(drop=True)
@@ -75,7 +75,78 @@ def calcular_rsi_wilder(close_series, periodo=14):
     return pd.Series(rsi, index=close_series.index)
 
 # ======================================================================
-# ANALISIS POR TICKER (con RSI Wilder, ADD y radar exacto)
+# GEX — PUT WALL, CALL WALL E INTERPRETACION
+# ======================================================================
+def calcular_gex(ticker_name, precio_actual):
+    """
+    Calcula Put Wall y Call Wall desde yfinance options chain.
+    Put Wall  = strike con mayor Open Interest en puts
+    Call Wall = strike con mayor Open Interest en calls
+    Solo disponible para acciones USA con opciones listadas.
+    """
+    try:
+        tk = yf.Ticker(ticker_name)
+        exps = tk.options
+        if not exps:
+            return None
+
+        # Usar los 2 vencimientos más cercanos para mayor liquidez
+        exps_usar = exps[:5]
+        puts_all  = []
+        calls_all = []
+
+        for exp in exps_usar:
+            chain = tk.option_chain(exp)
+            puts_all.append(chain.puts[['strike','openInterest']].copy())
+            calls_all.append(chain.calls[['strike','openInterest']].copy())
+
+        puts_df  = pd.concat(puts_all).groupby('strike')['openInterest'].sum().reset_index()
+        calls_df = pd.concat(calls_all).groupby('strike')['openInterest'].sum().reset_index()
+
+        # Filtrar strikes razonables (precio ± 30%)
+        rango_low  = precio_actual * 0.70
+        rango_high = precio_actual * 1.30
+        puts_df  = puts_df[(puts_df['strike'] >= rango_low) & (puts_df['strike'] <= rango_high)]
+        calls_df = calls_df[(calls_df['strike'] >= rango_low) & (calls_df['strike'] <= rango_high)]
+
+        if puts_df.empty or calls_df.empty:
+            return None
+
+        put_wall  = float(puts_df.loc[puts_df['openInterest'].idxmax(), 'strike'])
+        call_wall = float(calls_df.loc[calls_df['openInterest'].idxmax(), 'strike'])
+
+        # Interpretacion de 3 palabras
+        if precio_actual > call_wall:
+            emoji    = "🔴"
+            contexto = "Techo gamma activo"
+        elif precio_actual < put_wall:
+            emoji    = "🟡"
+            contexto = "Piso gamma, rebote"
+        else:
+            # Entre Put Wall y Call Wall — zona favorable
+            dist_put  = precio_actual - put_wall
+            dist_call = call_wall - precio_actual
+            if dist_call < dist_put * 0.4:
+                emoji    = "🟠"
+                contexto = "Cerca techo gamma"
+            elif dist_put < dist_call * 0.4:
+                emoji    = "🟢"
+                contexto = "Zona gamma favorable"
+            else:
+                emoji    = "🟢"
+                contexto = "Zona gamma favorable"
+
+        return {
+            "Put Wall":  round(put_wall, 2),
+            "Call Wall": round(call_wall, 2),
+            "GEX":       f"{emoji} {contexto}",
+        }
+
+    except Exception:
+        return None
+
+# ======================================================================
+# ANALISIS POR TICKER — SG4
 # ======================================================================
 def analizar_ticker(df, ticker_name):
     df = df.dropna(subset=['Close', 'Volume'])
@@ -128,7 +199,6 @@ def analizar_ticker(df, ticker_name):
     df['DVAL'] = df['KVAL'].ewm(alpha=1/3, adjust=False).mean()
     df['J_V']  = (3 * df['KVAL']) - (2 * df['DVAL'])
     df['GIRO_J'] = df['J_V'] > df['J_V'].shift(1)
-    df['CROSS_KD'] = (df['KVAL'] > df['DVAL']) & (df['KVAL'].shift(1) <= df['DVAL'].shift(1))
 
     # MACD
     df['DIF']   = (df['Close'].ewm(span=12, adjust=False).mean()
@@ -139,9 +209,13 @@ def analizar_ticker(df, ticker_name):
         (df['HISTO'] > df['HISTO'].shift(1)) &
         (df['HISTO'].shift(1) <= df['HISTO'].shift(2))
     )
-    df['CROSS_MACD'] = (df['DIF'] > df['DEA']) & (df['DIF'].shift(1) <= df['DEA'].shift(1))
+    df['MACD_GIRO_NEG'] = (
+        (df['HISTO'] < 0) &
+        (df['HISTO'] < df['HISTO'].shift(1)) &
+        (df['HISTO'].shift(1) < df['HISTO'].shift(2))
+    )
 
-    # RSI WILDER (original)
+    # RSI WILDER
     df['OSC'] = calcular_rsi_wilder(df['Close'], periodo=14)
 
     # BOLLINGER Y VOLUMEN
@@ -149,60 +223,61 @@ def analizar_ticker(df, ticker_name):
     df['BB_STD'] = df['Close'].rolling(20).std(ddof=0)
     df['BB_DN']  = df['BB_MID'] - (2 * df['BB_STD'])
     df['VOL_MA'] = df['Volume'].rolling(20).mean()
-    df['VOL_OK']    = df['Volume'] > df['VOL_MA'] * 1.05
-    df['VOL_MED']   = df['Volume'] > df['VOL_MA'] * 1.20
-    df['VOL_ALT']   = df['Volume'] > df['VOL_MA'] * 1.40
-    df['VOL_RELAX'] = df['Volume'] > df['VOL_MA'] * 0.95
-    df['VOL_SOFT']  = df['Volume'] > df['VOL_MA'] * 0.90
 
-    # ========== GATILLOS (exactamente igual a V10) ==========
+    # GATILLOS SG3 ORIGINALES
     df['S_PULL'] = (
         (df['Low'] < df['MA50'] * 1.015) & (df['Close'] > df['MA50'] * 0.985) &
-        df['GIRO_J'] & df['VOL_OK'] & df['FILTRO_BASE']
+        df['GIRO_J'] & (df['Volume'] > df['VOL_MA'] * 1.05) & df['FILTRO_BASE']
     )
     df['S_IMPU'] = (
         (df['Close'] > df['High'].shift(1).rolling(5).max()) &
         (df['ADX_V'] > df['ADX_REQ']) & df['MA20_UP'] &
-        df['GIRO_J'] & df['VOL_OK']
+        df['GIRO_J'] & (df['Volume'] > df['VOL_MA'] * 1.05)
     )
     df['S_BOLL'] = (
         (df['Low'].shift(1) <= df['BB_DN']) & (df['Close'] > df['BB_DN']) &
         df['GIRO_J'] & df['GIRO_MACD'] &
-        df['VOL_OK'] & df['FILTRO_BASE']
+        (df['Volume'] > df['VOL_MA'] * 1.05) & df['FILTRO_BASE']
     )
     df['S_SUELO'] = (
         (df['OSC'] < 32) & (df['J_V'] < 22) &
         (df['Low'].shift(1) <= df['BB_DN']) & (df['Close'] > df['BB_DN']) &
         (df['Close'] > df['Low'].shift(1)) & df['GIRO_MACD'] &
-        df['VOL_SOFT']
+        (df['Volume'] > df['VOL_MA'] * 0.9)
     )
+    df['CROSS_MACD'] = (df['DIF'] > df['DEA']) & (df['DIF'].shift(1) <= df['DEA'].shift(1))
     df['S_MACD_CROSS'] = (
         df['CROSS_MACD'] & (df['DIF'] < 0) & (df['HISTO'] > df['HISTO'].shift(1)) &
         (df['Close'] > df['MA20']) & df['MA20_UP'] &
-        df['VOL_OK'] & df['FILTRO_BASE']
+        (df['Volume'] > df['VOL_MA'] * 1.05) & df['FILTRO_BASE']
     )
+    df['CROSS_KD'] = (df['KVAL'] > df['DVAL']) & (df['KVAL'].shift(1) <= df['DVAL'].shift(1))
     df['S_EARLY'] = (
         (df['OSC'] < 38) & (df['J_V'] < 30) & df['CROSS_KD'] &
         (df['Close'] > df['Close'].shift(1)) & df['MA20_UP'] &
-        df['VOL_SOFT'] & df['FILTRO_BASE']
+        (df['Volume'] > df['VOL_MA'] * 0.9) & df['FILTRO_BASE']
     )
+
+    # NUEVOS GATILLOS SG4
     df['S_REBOTE_MA50'] = (
         (df['Low'] <= df['MA50'] * 1.008) & (df['Close'] > df['MA50']) &
         (df['Close'] > df['BB_DN']) & (df['Close'] < df['BB_MID']) &
-        df['GIRO_J'] & df['MA20_UP'] & df['F_ALCISTA'] & df['VOL_RELAX']
+        df['GIRO_J'] & df['MA20_UP'] & df['F_ALCISTA'] &
+        (df['Volume'] > df['VOL_MA'] * 0.95)
     )
     df['S_REBOTE_MA200'] = (
         (df['Low'] <= df['MA200'] * 1.01) & (df['Close'] > df['MA200']) &
-        (df['Close'] > df['Low'].shift(1)) & df['GIRO_J'] &
-        df['MA20_UP'] & df['VOL_RELAX']
+        (df['Close'] > df['Low'].shift(1)) & df['GIRO_J'] & df['MA20_UP'] &
+        (df['Volume'] > df['VOL_MA'] * 0.95)
     )
     df['S_BOLL_SOFT'] = (
         (df['Low'].shift(1) <= df['BB_DN']) & (df['Close'] > df['BB_DN']) &
         (df['Close'] > df['Low'].shift(1)) & df['GIRO_J'] &
-        df['VOL_SOFT'] & df['FILTRO_BASE']
+        (df['Volume'] > df['VOL_MA'] * 0.9) & df['FILTRO_BASE'] &
+        ~df['MACD_GIRO_NEG']
     )
 
-    # Lógica B_RAW
+    # B_RAW
     is_bc  = df['BANDA'] == "BC"
     is_vol = df['BANDA'] == "VOL"
     s_bc_valid = (
@@ -217,123 +292,127 @@ def analizar_ticker(df, ticker_name):
     )
     df['B_RAW'] = (is_bc & s_bc_valid) | (is_vol & s_vol_valid)
 
-    # Días consecutivos activa
-    b_raw_list = df['B_RAW'].tolist()
+    b_raw_list  = df['B_RAW'].tolist()
     dias_activa = 0
     for val in reversed(b_raw_list[-5:]):
         if val: dias_activa += 1
-        else: break
+        else:   break
 
-    # Gatillos activos hoy
     gatillos = []
     if dias_activa > 0:
         for nombre, col in [
-            ("S_PULL","S_PULL"),("S_IMPU","S_IMPU"),("S_BOLL","S_BOLL"),
-            ("S_SUELO","S_SUELO"),("S_MACD_CROSS","S_MACD_CROSS"),
-            ("S_EARLY","S_EARLY"),("S_REBOTE_MA50","S_REBOTE_MA50"),
-            ("S_REBOTE_MA200","S_REBOTE_MA200"),("S_BOLL_SOFT","S_BOLL_SOFT")
+            ("S_PULL","S_PULL"), ("S_IMPU","S_IMPU"), ("S_BOLL","S_BOLL"),
+            ("S_SUELO","S_SUELO"), ("S_MACD_CROSS","S_MACD_CROSS"),
+            ("S_EARLY","S_EARLY"), ("S_REBOTE_MA50","S_REBOTE_MA50"),
+            ("S_REBOTE_MA200","S_REBOTE_MA200"), ("S_BOLL_SOFT","S_BOLL_SOFT"),
         ]:
             if df[col].iloc[-1]: gatillos.append(nombre)
 
-    tp_mult = 1.6 if df['BANDA'].iloc[-1] == "BC" else 2.2
+    tp_mult  = 1.6 if df['BANDA'].iloc[-1] == "BC" else 2.2
     tp_ideal = df['Close'].iloc[-1] + (df['ATR_V'].iloc[-1] * tp_mult)
 
-    # ========== RADAR EXACTO (Pine) ==========
-    df['OJO'] = (df['OSC'] < 32) & (df['J_V'] < 25) & (df['Close'] < df['BB_DN'])
-    df['CRUCE_J'] = (df['J_V'] > 10) & (df['J_V'].shift(1) <= 10)
-    df['BTD'] = df['OJO'].shift(1) & df['CRUCE_J'] & df['GIRO_MACD']
+    # RADAR
+    df['OJO'] = (
+        (df['OSC'] < 35) & (df['J_V'] < 28) &
+        (df['Close'] <= df['BB_DN'] * 1.01)
+    ).fillna(False)
+    df['CRUCE_J'] = (
+        (df['J_V'] > 10) & (df['J_V'].shift(1).fillna(100) <= 12)
+    ).fillna(False)
+    df['BTD'] = (
+        df['OJO'].shift(1).fillna(False) &
+        df['CRUCE_J'] &
+        df['GIRO_MACD'].fillna(False)
+    ).fillna(False)
+
     ojo_reciente = bool(df['OJO'].iloc[-2:].any())
     btd_reciente = bool(df['BTD'].iloc[-2:].any())
 
-    # ========== ADD (aumento) ==========
-    dmp_a = df['DMP_RAW'].rolling(6).sum()
-    dmm_a = df['DMM_RAW'].rolling(6).sum()
-    tr6 = df['TR_V'].rolling(6).sum().replace(0, 1e-8)
-    pdi_a = dmp_a * 100 / tr6
-    mdi_a = dmm_a * 100 / tr6
-    adx_a = (abs(pdi_a - mdi_a) / (pdi_a + mdi_a).replace(0, 1e-8) * 100).rolling(6).mean()
-    adx_a_accel = (adx_a > adx_a.shift(1)) & (adx_a.shift(1) > adx_a.shift(2))
-
-    add_bc = (
-        (df['BANDA'] == "BC") & (pdi_a > mdi_a) & (adx_a > 28) & adx_a_accel &
-        df['CROSS_KD'] & (df['KVAL'] < 75) & (df['Close'] > df['MA20']) & df['VOL_MED']
-    )
-    max_high_3 = df['High'].rolling(3).max().shift(1)
-    add_vol = (
-        (df['BANDA'] == "VOL") & (pdi_a > mdi_a) & (adx_a > 32) & adx_a_accel &
-        (df['Close'] > max_high_3) & (df['Close'] > df['MA20']) & df['VOL_ALT']
-    )
-    df['ADD'] = add_bc | add_vol
-    add_hoy = bool(df['ADD'].iloc[-1])
-
     return {
-        "Ticker": ticker_name, "Fecha": ultima_fecha, "Banda": df['BANDA'].iloc[-1],
-        "Precio": round(float(df['Close'].iloc[-1]), 2),
-        "RSI": round(float(df['OSC'].iloc[-1]), 2),
-        "ADX": round(float(df['ADX_V'].iloc[-1]), 2),
-        "J_V": round(float(df['J_V'].iloc[-1]), 2),
-        "BB_DN": round(float(df['BB_DN'].iloc[-1]), 2),
-        "Dias_Activa": dias_activa, "Gatillos": ", ".join(gatillos) if gatillos else "—",
-        "TP1": round(float(tp_ideal), 2),
-        "Radar_OJO": ojo_reciente, "Radar_BTD": btd_reciente,
-        "ADD": add_hoy, "ADX_A": round(float(adx_a.iloc[-1]), 2),
-        "KVAL": round(float(df['KVAL'].iloc[-1]), 2),
-        "Volumen_MA": round(float(df['VOL_MA'].iloc[-1]), 0),
-        "Volumen": round(float(df['Volume'].iloc[-1]), 0),
+        "Ticker":      ticker_name,
+        "Fecha":       ultima_fecha,
+        "Banda":       df['BANDA'].iloc[-1],
+        "Precio":      round(float(df['Close'].iloc[-1]), 2),
+        "RSI":         round(float(df['OSC'].iloc[-1]), 2),
+        "ADX":         round(float(df['ADX_V'].iloc[-1]), 2),
+        "J_V":         round(float(df['J_V'].iloc[-1]), 2),
+        "BB_DN":       round(float(df['BB_DN'].iloc[-1]), 2),
+        "Dias_Activa": dias_activa,
+        "Gatillos":    ", ".join(gatillos) if gatillos else "—",
+        "TP1":         round(float(tp_ideal), 2),
+        "Radar_OJO":   ojo_reciente,
+        "Radar_BTD":   btd_reciente,
     }, None
 
 # ======================================================================
-# SIDEBAR Y MAIN (igual que antes, con 4 pestañas)
+# SIDEBAR
 # ======================================================================
 with st.sidebar:
     st.title("Configuracion SG4")
-    periodo = st.selectbox("Periodo historico", ["2y","1y","6mo"], index=0)
+    periodo    = st.selectbox("Periodo historico", ["2y","1y","6mo"], index=0)
     rsi_umbral = st.slider("Umbral RSI sobreventa", 25, 45, 33)
-    dias_max = st.slider("Señal activa max. dias", 1, 5, 3)
+    dias_max   = st.slider("Señal activa max. dias", 1, 5, 3)
+    usar_gex   = st.toggle("Incluir Put/Call Wall (GEX)", value=True,
+                           help="Calcula Put Wall y Call Wall desde opciones de yfinance. Solo acciones USA. Aumenta el tiempo de ejecucion.")
     st.markdown("---")
     st.markdown("**Watchlist personalizada**")
-    tickers_input = st.text_area("Un ticker por linea o separado por comas", height=140, placeholder="AAPL\nNVDA\nTSLA")
+    tickers_input = st.text_area(
+        "Un ticker por linea o separado por comas (vacio = lista base)",
+        height=140, placeholder="AAPL\nNVDA\nTSLA"
+    )
     st.markdown("---")
-    st.caption("SG4 v12 · RSI Wilder · ADD · Radar exacto")
+    st.caption("SG4 v11 · RSI Wilder · BC/VOL · 9 Gatillos · GEX")
     ejecutar = st.button("🚀 Ejecutar escaner", use_container_width=True, type="primary")
 
+# ======================================================================
+# MAIN
+# ======================================================================
 st.title("📊 SG4 — Santo Grial 4 · Screener")
-st.caption("Sistema KW-DNA · RSI Wilder · ADD · Radar exacto · v12.0")
+st.caption("Sistema KW-DNA · BC/VOL Adaptativo · RSI Wilder · 9 Gatillos · Put/Call Wall · v11.0")
 
 if not ejecutar:
     st.info("Configura los parametros en la barra lateral y presiona Ejecutar escaner.")
-    with st.expander("📖 Gatillos del sistema SG4", expanded=False):
+    with st.expander("📖 Gatillos SG4 + interpretacion GEX", expanded=False):
         st.markdown("""
-| Gatillo | Descripcion | Banda | Vol min |
+**Gatillos:**
+| Gatillo | Descripcion | Banda | Vol |
 |---|---|---|---|
-| S_PULL | Pullback a MA50 con rebote y KDJ girando | BC | 105% |
-| S_IMPU | Ruptura de maximos con ADX fuerte | BC+VOL | 105% |
-| S_BOLL | Rebote desde BB inferior + GIRO_MACD | BC+VOL | 105% |
-| S_SUELO | RSI+KDJ sobreventa extrema + giro MACD | BC+VOL | 90% |
-| S_MACD_CROSS | Cruce DIF/DEA bajo cero con momentum | BC+VOL | 105% |
-| S_EARLY | Cruce KD en sobreventa anticipado | BC+VOL | 90% |
-| S_REBOTE_MA50 | Rebote limpio en MA50, entre BB_DN y BB_MID | Solo BC | 95% |
-| S_REBOTE_MA200 | Rebote en MA200, soporte dinamico principal | BC+VOL | 95% |
-| S_BOLL_SOFT | Rebote BB inferior sin GIRO_MACD | BC+VOL | 90% |
-| **ADD** | Aumento de posicion (ADX acelerado + cruce K/D + volumen alto) | BC/VOL | 120%/140% |
+| S_PULL | Pullback a MA50 con rebote | BC | 105% |
+| S_IMPU | Ruptura maximos + ADX fuerte | BC+VOL | 105% |
+| S_BOLL | Rebote BB inferior + GIRO_MACD | BC+VOL | 105% |
+| S_SUELO | RSI+KDJ sobreventa + MACD | BC+VOL | 90% |
+| S_MACD_CROSS | Cruce DIF/DEA bajo cero | BC+VOL | 105% |
+| S_EARLY | Cruce KD anticipado | BC+VOL | 90% |
+| S_REBOTE_MA50 | Rebote MA50 entre bandas | Solo BC | 95% |
+| S_REBOTE_MA200 | Rebote MA200 | BC+VOL | 95% |
+| S_BOLL_SOFT | Rebote BB sin GIRO_MACD | BC+VOL | 90% |
+
+**Interpretacion GEX:**
+| Señal | Significado |
+|---|---|
+| 🟢 Zona gamma favorable | Precio entre Put y Call Wall, espacio para subir |
+| 🟠 Cerca techo gamma | Precio cerca del Call Wall, posible resistencia |
+| 🔴 Techo gamma activo | Precio sobre Call Wall, dealers venden |
+| 🟡 Piso gamma, rebote | Precio bajo Put Wall, dealers compran |
         """)
     st.stop()
 
-# Watchlist
+# Resolver watchlist
 if tickers_input.strip():
     tickers = [t.strip().upper() for t in tickers_input.replace(',','\n').splitlines() if t.strip()]
     tickers = list(dict.fromkeys(tickers))
 else:
     tickers = TICKERS_DEFAULT
 
-# Ejecucion
-lista_compras, lista_rsi, lista_radar, lista_add, lista_desc = [], [], [], [], []
+# ======================================================================
+# EJECUCION
+# ======================================================================
+lista_compras, lista_rsi, lista_radar, lista_desc = [], [], [], []
 progreso = st.progress(0, text="Iniciando...")
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3 = st.columns(3)
 m_compras = col1.empty()
-m_rsi = col2.empty()
-m_radar = col3.empty()
-m_add = col4.empty()
+m_rsi     = col2.empty()
+m_radar   = col3.empty()
 
 for idx, ticker in enumerate(tickers):
     pct = int((idx + 1) / len(tickers) * 100)
@@ -341,12 +420,11 @@ for idx, ticker in enumerate(tickers):
     m_compras.metric("🚀 Compras frescas", len(lista_compras))
     m_rsi.metric(f"📉 RSI < {rsi_umbral}", len(lista_rsi))
     m_radar.metric("🎯 Radar OJO/BTD", len(lista_radar))
-    m_add.metric("➕ ADD", len(lista_add))
 
     try:
         df = yf.download(ticker, period=periodo, progress=False, auto_adjust=True)
         if df.empty:
-            lista_desc.append({"Ticker": ticker, "Motivo": "Sin datos"})
+            lista_desc.append({"Ticker": ticker, "Motivo": "Sin datos en yfinance"})
             continue
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
@@ -356,94 +434,143 @@ for idx, ticker in enumerate(tickers):
             lista_desc.append({"Ticker": ticker, "Motivo": motivo})
             continue
 
-        # Compras frescas
+        # GEX — solo si está activado y no es cripto/ETF sin opciones
+        gex = None
+        if usar_gex and not any(x in ticker for x in ['-USD', 'ETH', 'BTC', 'SOL']):
+            gex = calcular_gex(ticker, datos["Precio"])
+
+        put_wall  = gex["Put Wall"]  if gex else "—"
+        call_wall = gex["Call Wall"] if gex else "—"
+        gex_ctx   = gex["GEX"]       if gex else "—"
+
+        # Seccion 1: Compras frescas
         if 0 < datos["Dias_Activa"] <= dias_max:
+            estado_str = "Dia 1" if datos["Dias_Activa"] == 1 else f"Activa {datos['Dias_Activa']}d"
             lista_compras.append({
-                "Ticker": datos["Ticker"], "Fecha": datos["Fecha"], "Banda": datos["Banda"],
-                "Antiguedad": "Dia 1" if datos["Dias_Activa"]==1 else f"Activa {datos['Dias_Activa']}d",
-                "Gatillos": datos["Gatillos"], "Precio": datos["Precio"],
-                "RSI": datos["RSI"], "ADX": datos["ADX"], "TP1": datos["TP1"]
+                "Ticker":     datos["Ticker"],
+                "Fecha":      datos["Fecha"],
+                "Banda":      datos["Banda"],
+                "Antiguedad": estado_str,
+                "Gatillos":   datos["Gatillos"],
+                "Precio":     datos["Precio"],
+                "RSI":        datos["RSI"],
+                "ADX":        datos["ADX"],
+                "TP1":        datos["TP1"],
+                "Put Wall":   put_wall,
+                "Call Wall":  call_wall,
+                "GEX":        gex_ctx,
             })
 
-        # Sobreventa
+        # Seccion 2: Sobreventa RSI
         if datos["RSI"] < rsi_umbral:
             lista_rsi.append({
-                "Ticker": datos["Ticker"], "Fecha": datos["Fecha"], "Banda": datos["Banda"],
-                "Precio": datos["Precio"], "RSI": datos["RSI"], "J_V": datos["J_V"], "ADX": datos["ADX"]
+                "Ticker":    datos["Ticker"],
+                "Fecha":     datos["Fecha"],
+                "Banda":     datos["Banda"],
+                "Precio":    datos["Precio"],
+                "RSI":       datos["RSI"],
+                "J_V":       datos["J_V"],
+                "ADX":       datos["ADX"],
+                "Put Wall":  put_wall,
+                "Call Wall": call_wall,
+                "GEX":       gex_ctx,
             })
 
-        # Radar
+        # Seccion 3 y 4: Radar
         if datos["Radar_BTD"]:
             lista_radar.append({
-                "Ticker": datos["Ticker"], "Senal": "🟢 BTD", "Banda": datos["Banda"],
-                "Precio": datos["Precio"], "RSI": datos["RSI"], "J_V": datos["J_V"], "BB_DN": datos["BB_DN"]
+                "Ticker":    datos["Ticker"],
+                "Senal":     "🟢 BTD",
+                "Banda":     datos["Banda"],
+                "Precio":    datos["Precio"],
+                "RSI":       datos["RSI"],
+                "J_V":       datos["J_V"],
+                "BB_DN":     datos["BB_DN"],
+                "Put Wall":  put_wall,
+                "Call Wall": call_wall,
+                "GEX":       gex_ctx,
             })
         elif datos["Radar_OJO"]:
             lista_radar.append({
-                "Ticker": datos["Ticker"], "Senal": "🟡 OJO", "Banda": datos["Banda"],
-                "Precio": datos["Precio"], "RSI": datos["RSI"], "J_V": datos["J_V"], "BB_DN": datos["BB_DN"]
+                "Ticker":    datos["Ticker"],
+                "Senal":     "🟡 OJO",
+                "Banda":     datos["Banda"],
+                "Precio":    datos["Precio"],
+                "RSI":       datos["RSI"],
+                "J_V":       datos["J_V"],
+                "BB_DN":     datos["BB_DN"],
+                "Put Wall":  put_wall,
+                "Call Wall": call_wall,
+                "GEX":       gex_ctx,
             })
 
-        # ADD
-        if datos["ADD"]:
-            lista_add.append({
-                "Ticker": datos["Ticker"], "Banda": datos["Banda"], "Precio": datos["Precio"],
-                "ADX_A": datos["ADX_A"], "KVAL": datos["KVAL"],
-                "Volumen": datos["Volumen"], "Vol_MA": datos["Volumen_MA"], "RSI": datos["RSI"]
-            })
     except Exception as e:
         lista_desc.append({"Ticker": ticker, "Motivo": str(e)[:80]})
 
 progreso.empty()
 st.success(f"✅ Escaner completado — {len(tickers)} tickers procesados")
+m_compras.metric("🚀 Compras frescas", len(lista_compras))
+m_rsi.metric(f"📉 RSI < {rsi_umbral}", len(lista_rsi))
+m_radar.metric("🎯 Radar OJO/BTD", len(lista_radar))
 
-# Mostrar 4 pestañas
-tab1, tab2, tab3, tab4 = st.tabs([
+# ======================================================================
+# TABS
+# ======================================================================
+tab1, tab2, tab3 = st.tabs([
     f"🚀 Compras frescas ({len(lista_compras)})",
     f"📉 Sobreventa RSI ({len(lista_rsi)})",
     f"🎯 Radar OJO/BTD ({len(lista_radar)})",
-    f"➕ ADD ({len(lista_add)})"
 ])
 
 with tab1:
+    st.subheader("Senales activas en los ultimos 1-3 dias")
     if lista_compras:
         df1 = pd.DataFrame(lista_compras).reset_index(drop=True)
-        for c in ["Precio","RSI","ADX","TP1"]: df1[c] = df1[c].round(2)
-        st.dataframe(df1.style.map(lambda v: "background-color:#1a3d2b" if v=="BC" else "background-color:#3d2e0a", subset=["Banda"]), use_container_width=True, hide_index=True)
-        st.download_button("⬇️ CSV", df1.to_csv(index=False).encode("utf-8"), "compras_sg4_v12.csv")
-    else: st.info("Ninguna compra fresca.")
+        for c in ["Precio", "RSI", "ADX", "TP1"]:
+            df1[c] = pd.to_numeric(df1[c], errors='coerce').round(2)
+        st.dataframe(
+            df1.style.map(
+                lambda v: "background-color:#1a3d2b" if v == "BC" else "background-color:#3d2e0a",
+                subset=["Banda"]
+            ),
+            use_container_width=True, hide_index=True
+        )
+        st.download_button("⬇️ Descargar CSV", df1.to_csv(index=False).encode("utf-8"),
+                           "compras_sg4_v11.csv", "text/csv")
+    else:
+        st.info("Ninguna compra fresca reciente.")
 
 with tab2:
+    st.subheader(f"Activos con RSI Wilder < {rsi_umbral}")
     if lista_rsi:
         df2 = pd.DataFrame(lista_rsi).sort_values("RSI").reset_index(drop=True)
-        for c in ["Precio","RSI","J_V","ADX"]: df2[c] = df2[c].round(2)
+        for c in ["Precio", "RSI", "J_V", "ADX"]:
+            df2[c] = pd.to_numeric(df2[c], errors='coerce').round(2)
         st.dataframe(df2, use_container_width=True, hide_index=True)
-        st.download_button("⬇️ CSV", df2.to_csv(index=False).encode("utf-8"), "sobreventa_sg4_v12.csv")
-    else: st.info("Ningun activo en sobreventa.")
+        st.download_button("⬇️ Descargar CSV", df2.to_csv(index=False).encode("utf-8"),
+                           "sobreventa_sg4_v11.csv", "text/csv")
+    else:
+        st.info("Ningun activo en sobreventa extrema hoy.")
 
 with tab3:
+    st.subheader("Radar temprano — OJO y BTD")
     if lista_radar:
         df3 = pd.DataFrame(lista_radar)
         df3["_ord"] = df3["Senal"].apply(lambda x: 0 if "BTD" in x else 1)
         df3 = df3.sort_values(["_ord","RSI"]).drop(columns="_ord").reset_index(drop=True)
-        for c in ["Precio","RSI","J_V","BB_DN"]: df3[c] = df3[c].round(2)
+        for c in ["Precio", "RSI", "J_V", "BB_DN"]:
+            df3[c] = pd.to_numeric(df3[c], errors='coerce').round(2)
         st.dataframe(df3, use_container_width=True, hide_index=True)
-        st.download_button("⬇️ CSV", df3.to_csv(index=False).encode("utf-8"), "radar_sg4_v12.csv")
-    else: st.info("Sin alertas de suelo.")
+        st.download_button("⬇️ Descargar CSV", df3.to_csv(index=False).encode("utf-8"),
+                           "radar_sg4_v11.csv", "text/csv")
+    else:
+        st.info("Sin alertas tempranas de formacion de suelo.")
 
-with tab4:
-    if lista_add:
-        df4 = pd.DataFrame(lista_add).sort_values("ADX_A", ascending=False).reset_index(drop=True)
-        for c in ["Precio","ADX_A","KVAL","RSI"]: df4[c] = df4[c].round(2)
-        df4["Volumen"] = df4["Volumen"].apply(lambda x: f"{x:,.0f}")
-        df4["Vol_MA"] = df4["Vol_MA"].apply(lambda x: f"{x:,.0f}")
-        st.dataframe(df4.style.map(lambda v: "background-color:#1a3d2b" if v=="BC" else "background-color:#3d2e0a", subset=["Banda"]), use_container_width=True, hide_index=True)
-        st.download_button("⬇️ CSV", df4.to_csv(index=False).encode("utf-8"), "add_sg4_v12.csv")
-    else: st.info("No se detectaron señales ADD.")
-
+# DESCARTADOS
 if lista_desc:
-    with st.expander(f"⚠️ Descartados ({len(lista_desc)})", expanded=False):
-        st.dataframe(pd.DataFrame(lista_desc), use_container_width=True, hide_index=True)
+    with st.expander(f"⚠️ Tickers descartados ({len(lista_desc)})", expanded=False):
+        df4 = pd.DataFrame(lista_desc).reset_index(drop=True)
+        st.dataframe(df4, use_container_width=True, hide_index=True)
 
 st.markdown("---")
-st.caption("SG4 v12 · RSI Wilder (original) · Radar exacto · ADD · Solo fines educativos.")
+st.caption("SG4 Screener v11 · RSI Wilder = Moomoo/TradingView · Put/Call Wall via yfinance · Solo fines educativos.")
