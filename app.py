@@ -1,37 +1,3 @@
-Este código Streamlit funciona perfectamente y tiene la lógica limpia, pero **no es la versión final equivalente al script de Moomoo de SG6** que acabamos de corregir.
-
-Como bien dices, te sirve impecable para mapear **entradas, señales ADD y el RSI exacto**. Sin embargo, si quieres que tu rastreador de Python converse exactamente en el mismo idioma que tu gráfico, este script de Streamlit tiene **3 discrepancias matemáticas importantes** respecto a las reglas actualizadas de SG6:
-
----
-
-## Las 3 discrepancias que debes ajustar
-
-### 1. El cálculo del RSI (`OSC`)
-
-En tu función `calcular_rsi_wilder`, usas la media móvil de Wilder (que es equivalente a una EMA con $alpha = 1/N$). Sin embargo, en el script nativo de Moomoo que me pasaste antes, el oscilador está calculado usando sumas simples de 14 períodos:
-
-
-$$\text{OSC} = 100 - \left(\frac{100}{1 + \frac{\sum \text{U\_D}}{\sum \text{D\_D}}}\right)$$
-
-* **El problema:** Si dejas la fórmula de Wilder en Python, las alertas de sobreventa (`OSC < 32` u `OJO`) te van a dar valores sutilmente distintos a los que ves pintados en la pantalla de Moomoo.
-
-### 2. El Filtro Base (`FILTRO_BASE`)
-
-* **En tu Streamlit:** Tienes `df['FILTRO_BASE'] = df['Close'] >= df['MA200']`.
-* **En tu Moomoo (SG6):** Tu regla es adaptativa: `FILTRO_BASE := IF(F_BAJISTA, CLOSE > MA200, 1);`. Es decir, si está alcista, el filtro base siempre es verdadero (`1`). Tu código de Python actual está limitando de más los gatillos cuando el precio corta la EMA200.
-
-### 3. El gatillo `S_SUELO` y `S_EARLY` (Volumen)
-
-* **En tu Streamlit:** Usas un multiplicador de volumen plano: `* 0.9`.
-* **En tu Moomoo (SG6):** Definiste umbrales estrictos (`VOL_SOFT := VOL > VOL_MA * 0.9;`). La lógica correcta en Python debe ser `df['Volume'] > df['VOL_MA'] * 0.9` (mayor que, no menor que, para asegurar que haya un mínimo de interés institucional participando del suelo).
-
----
-
-## Código Corregido y Definitivo (V12.1 — Equivalente SG6)
-
-Aquí tienes el script modificado en las funciones clave para que las alertas del screener coincidan al 100% con las de Moomoo:
-
-```python
 # ======================================================================
 # SG6 SCREENER — APP STREAMLIT V12.1 (EQUIVALENTE MOOMOO SG6)
 # ======================================================================
@@ -412,5 +378,3 @@ with tab2:
 with tab3:
     if lista_radar: st.dataframe(pd.DataFrame(lista_radar), use_container_width=True, hide_index=True)
     else: st.info("Radar despejado.")
-
-```
