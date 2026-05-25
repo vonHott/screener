@@ -415,6 +415,7 @@ st.markdown("""
 # ======================================================================
 # PANTALLA INICIAL — solo si no hay escaner listo
 # ======================================================================
+# Pantalla inicial solo si no hay escaner listo Y no se está ejecutando
 if not st.session_state.escaner_listo and not ejecutar:
     with st.spinner("Cargando datos de mercado..."):
         indices, vix_val, btc_pct, noticias, hot = get_market_data()
@@ -505,6 +506,10 @@ if not st.session_state.escaner_listo and not ejecutar:
 if ejecutar:
     st.session_state.escaner_listo  = False
     st.session_state.seccion        = None
+    st.session_state.lista_compras  = []
+    st.session_state.lista_rsi      = []
+    st.session_state.lista_radar    = []
+    st.session_state.lista_desc     = []
     st.session_state.rsi_umbral_run = rsi_umbral
 
     lista_compras,lista_rsi,lista_radar,lista_desc=[],[],[],[]
@@ -553,8 +558,11 @@ if ejecutar:
     status_box.success(f"✅ Escáner completado — {len(TICKERS_DEFAULT)} tickers procesados")
 
 # ======================================================================
-# PANTALLA DE RESULTADOS
+# PANTALLA DE RESULTADOS — solo si hay datos
 # ======================================================================
+if not st.session_state.escaner_listo:
+    st.stop()
+
 lc  = st.session_state.lista_compras
 lr  = st.session_state.lista_rsi
 lrd = st.session_state.lista_radar
