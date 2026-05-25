@@ -1,5 +1,5 @@
 # ======================================================================
-# SG6 SCREENER — APP STREAMLIT V16
+# SG6 SCREENER — APP STREAMLIT V17
 # Santo Grial 6 · Para Inversores
 # ======================================================================
 
@@ -35,15 +35,31 @@ html, body, [class*="css"] { font-family: 'Inter', 'Segoe UI', sans-serif; }
     border: 1px solid #334155;
     border-radius: 8px;
     padding: 20px 28px;
-    margin-bottom: 24px;
+    margin-bottom: 20px;
 }
 .main-header h1 { color: #f1f5f9; font-size: 22px; font-weight: 600; letter-spacing: -0.3px; margin: 0 0 4px 0; }
 .main-header p  { color: #64748b; font-size: 12px; margin: 0; letter-spacing: 0.5px; }
-[data-testid="metric-container"] { background: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 12px 16px; }
+[data-testid="metric-container"] {
+    background: #0f172a;
+    border: 1px solid #1e293b;
+    border-radius: 6px;
+    padding: 12px 16px;
+}
 [data-testid="stTabs"] button { font-size: 13px; font-weight: 500; color: #64748b; }
 [data-testid="stTabs"] button[aria-selected="true"] { color: #38bdf8; border-bottom-color: #38bdf8; }
 [data-testid="stDataFrame"] { border: 1px solid #1e293b; border-radius: 6px; overflow: hidden; }
 [data-testid="stSidebar"] { background: #0f172a; border-right: 1px solid #1e293b; }
+.glosario {
+    background: #0f172a;
+    border: 1px solid #1e293b;
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin-bottom: 12px;
+    font-size: 12px;
+    color: #64748b;
+    line-height: 1.8;
+}
+.glosario b { color: #94a3b8; }
 .footer-cap { color: #334155; font-size: 11px; text-align: center; padding-top: 16px; }
 </style>
 """, unsafe_allow_html=True)
@@ -104,7 +120,7 @@ def calcular_rsi(close_series, periodo=14):
     return pd.Series(rsi, index=close_series.index)
 
 # ======================================================================
-# GEX — PUT WALL / CALL WALL (5 SERIES)
+# GEX
 # ======================================================================
 @st.cache_data(ttl=14400, show_spinner=False)
 def calcular_gex(ticker_name, precio_actual):
@@ -125,7 +141,7 @@ def calcular_gex(ticker_name, precio_actual):
             return None
         puts_df  = pd.concat(puts_all).groupby('strike')['openInterest'].sum().reset_index()
         calls_df = pd.concat(calls_all).groupby('strike')['openInterest'].sum().reset_index()
-        rlo, rhi = precio_actual * 0.70, precio_actual * 1.30
+        rlo, rhi = precio_actual*0.70, precio_actual*1.30
         puts_df  = puts_df[(puts_df['strike']>=rlo) & (puts_df['strike']<=rhi)]
         calls_df = calls_df[(calls_df['strike']>=rlo) & (calls_df['strike']<=rhi)]
         if puts_df.empty or calls_df.empty:
@@ -139,7 +155,7 @@ def calcular_gex(ticker_name, precio_actual):
         else:
             dist_put  = precio_actual - put_wall
             dist_call = call_wall - precio_actual
-            emoji, ctx = ("🟠", "Cerca techo") if dist_call < dist_put * 0.4 else ("🟢", "Zona favorable")
+            emoji, ctx = ("🟠","Cerca techo") if dist_call < dist_put*0.4 else ("🟢","Zona favorable")
         return {
             "Put Wall":  f"${put_wall:.2f}",
             "Call Wall": f"${call_wall:.2f}",
@@ -149,7 +165,7 @@ def calcular_gex(ticker_name, precio_actual):
         return None
 
 # ======================================================================
-# ANALISIS POR TICKER — SG6
+# ANALISIS POR TICKER
 # ======================================================================
 @st.cache_data(ttl=14400, show_spinner=False)
 def analizar_ticker(ticker_name, periodo):
@@ -223,7 +239,7 @@ def analizar_ticker(ticker_name, periodo):
     df['MACD_GIRO_NEG']  = (df['HISTO']<0) & (df['HISTO']<df['HISTO'].shift(1)) & (df['HISTO'].shift(1)<df['HISTO'].shift(2))
     df['MACD_CONV_ALCI'] = (df['HISTO']<0) & (df['HISTO']>df['HISTO'].shift(1)) & (df['HISTO']>df['HISTO'].shift(2))
     df['TENDENCIA_VIVA'] = (
-        ((df['DIF']>0) | df['MACD_CONV_ALCI']) &
+        ((df['DIF']>0)|df['MACD_CONV_ALCI']) &
         df['MA20_UP'] & (df['PDI']>df['MDI']) & (df['Close']>df['MA50'])
     )
 
@@ -304,36 +320,35 @@ def analizar_ticker(ticker_name, periodo):
         if val: dias_activa += 1
         else:   break
 
+    # Buscar ultima señal de entrada y capturar precio/ATR de ESA barra
     b_signal_list = df['B_SIGNAL'].tolist()
-    duracion, e_price, atr_entry, fecha_entrada = 0, None, None, None
+    duracion, e_price, atr_entry = 0, None, None
     for i in range(len(b_signal_list)-1, -1, -1):
         if b_signal_list[i]:
-            duracion     = len(b_signal_list) - 1 - i
-            e_price      = float(df['Close'].iloc[i])
-            atr_entry    = float(df['ATR_V'].iloc[i])
-            fecha_entrada = df.index[i].strftime('%Y-%m-%d')
+            duracion  = len(b_signal_list) - 1 - i
+            e_price   = float(df['Close'].iloc[i])   # precio cierre vela gatillo
+            atr_entry = float(df['ATR_V'].iloc[i])   # ATR de ese dia
             break
 
-    precio  = float(df['Close'].iloc[-1])
+    precio  = float(df['Close'].iloc[-1])   # precio actual
     banda   = df['BANDA'].iloc[-1]
     tp_mult = 1.6 if banda == "BC" else 2.2
 
-    # TP1 y SL calculados desde la VELA GATILLO
+    # TP1, SL desde vela gatillo — varían por ticker según e_price y atr_entry
     if e_price and atr_entry:
-        tp1_nivel = e_price + atr_entry * tp_mult
-        sl_nivel  = e_price * 0.97
-        # Cuanto falta para TP1 desde precio actual
+        tp1_nivel     = e_price + atr_entry * tp_mult
+        sl_nivel      = e_price * 0.97
         pct_falta_tp1 = (tp1_nivel - precio) / precio * 100
-        # Distancia del precio actual al SL
         pct_dist_sl   = (precio - sl_nivel) / precio * 100
-        tp1_str  = f"${tp1_nivel:.2f}"
-        sl_str   = f"${sl_nivel:.2f}"
-        falta_str = f"{pct_falta_tp1:+.1f}%" if pct_falta_tp1 >= 0 else f"✅ {abs(pct_falta_tp1):.1f}% superado"
-        sl_dist_str = f"{pct_dist_sl:.1f}%"
+        tp1_str       = f"${tp1_nivel:.2f}"
+        sl_str        = f"${sl_nivel:.2f}"
+        e_price_str   = f"${e_price:.2f}"
+        falta_str     = f"✅ +{abs(pct_falta_tp1):.1f}% sup." if pct_falta_tp1 < 0 else f"{pct_falta_tp1:+.1f}%"
+        sl_dist_str   = f"{pct_dist_sl:.1f}%"
     else:
-        tp1_str = sl_str = falta_str = sl_dist_str = "—"
-        tp1_nivel = sl_nivel = precio
+        tp1_str = sl_str = e_price_str = falta_str = sl_dist_str = "—"
         pct_falta_tp1 = 0
+        pct_dist_sl   = 99
 
     i = len(df) - 1
     add_bc = (
@@ -384,10 +399,10 @@ def analizar_ticker(ticker_name, periodo):
     return {
         "Ticker":        ticker_name,
         "Fecha":         ultima_fecha,
-        "F.Entrada":     fecha_entrada or "—",
         "Banda":         banda,
         "Precio":        f"${precio:.2f}",
         "precio_raw":    precio,
+        "P.Entrada":     e_price_str,
         "RSI":           f"{rsi_val:.1f}",
         "rsi_raw":       rsi_val,
         "ADX":           f"{adx_val:.1f}",
@@ -397,13 +412,14 @@ def analizar_ticker(ticker_name, periodo):
         "Duracion":      duracion,
         "Gatillos":      ", ".join(gatillos) if gatillos else "—",
         "TP1":           tp1_str,
-        "Falta %TP1":    falta_str,
-        "SL (−3%)":      sl_str,
+        "Falta TP1":     falta_str,
+        "SL −3%":        sl_str,
         "Dist. SL":      sl_dist_str,
+        "pct_falta_raw": pct_falta_tp1,
+        "pct_sl_raw":    pct_dist_sl,
         "Radar_OJO":     bool(df['OJO'].iloc[-2:].any()),
         "Radar_BTD":     bool(df['BTD'].iloc[-2:].any()),
         "Add_Senal":     add_senal,
-        "pct_falta_raw": pct_falta_tp1,
     }, None
 
 # ======================================================================
@@ -418,7 +434,7 @@ def exportar_excel(dfs_dict):
     return buffer.getvalue()
 
 # ======================================================================
-# SIDEBAR — SIMPLIFICADO
+# SIDEBAR
 # ======================================================================
 with st.sidebar:
     st.markdown("### ⚙️ Configuración")
@@ -429,11 +445,11 @@ with st.sidebar:
     usar_gex   = st.toggle(
         "Put/Call Wall GEX (próximas 5 semanas)",
         value=True,
-        help="5 series de vencimientos de opciones. Solo acciones USA. Aumenta el tiempo de ejecución."
+        help="5 series de vencimientos de opciones. Solo acciones USA."
     )
     st.markdown("---")
     ejecutar = st.button("▶ Ejecutar escáner", use_container_width=True, type="primary")
-    st.markdown('<p style="color:#334155;font-size:11px;text-align:center;margin-top:8px;">SG6 · v16.0 · Solo fines educativos</p>', unsafe_allow_html=True)
+    st.markdown('<p style="color:#334155;font-size:11px;text-align:center;margin-top:8px;">SG6 · v17.0 · Solo fines educativos</p>', unsafe_allow_html=True)
 
 # ======================================================================
 # HEADER
@@ -461,11 +477,18 @@ tickers = TICKERS_DEFAULT
 # EJECUCION
 # ======================================================================
 lista_compras, lista_rsi, lista_radar, lista_desc = [], [], [], []
-progreso = st.progress(0, text="Iniciando escáner...")
+
+# Métricas arriba — una sola vez
 col1, col2, col3 = st.columns(3)
 m_compras = col1.empty()
 m_rsi     = col2.empty()
 m_radar   = col3.empty()
+m_compras.metric("🚀 Compras + ADD", "—")
+m_rsi.metric(f"📉 RSI < {rsi_umbral}", "—")
+m_radar.metric("🎯 Radar OJO/BTD", "—")
+
+progreso    = st.progress(0, text="Iniciando escáner...")
+status_box  = st.empty()
 
 for idx, ticker in enumerate(tickers):
     pct = int((idx+1)/len(tickers)*100)
@@ -496,27 +519,28 @@ for idx, ticker in enumerate(tickers):
             else f"Abierta {datos['Duracion']}d"
         )
         lista_compras.append({
-            "Ticker":      datos["Ticker"],
-            "F.Entrada":   datos["F.Entrada"],
-            "Banda":       datos["Banda"],
-            "Antigüedad":  estado_str,
-            "Gatillos":    datos["Gatillos"],
-            "Precio":      datos["Precio"],
-            "RSI":         datos["RSI"],
-            "ADX":         datos["ADX"],
-            "TP1":         datos["TP1"],
-            "Falta %TP1":  datos["Falta %TP1"],
-            "SL (−3%)":    datos["SL (−3%)"],
-            "Dist. SL":    datos["Dist. SL"],
-            "Put Wall":    put_wall,
-            "Call Wall":   call_wall,
-            "GEX":         gex_ctx,
+            "Ticker":     datos["Ticker"],
+            "Banda":      datos["Banda"],
+            "Antigüedad": estado_str,
+            "Gatillos":   datos["Gatillos"],
+            "P.Entrada":  datos["P.Entrada"],
+            "Precio":     datos["Precio"],
+            "RSI":        datos["RSI"],
+            "ADX":        datos["ADX"],
+            "TP1":        datos["TP1"],
+            "Falta TP1":  datos["Falta TP1"],
+            "SL −3%":     datos["SL −3%"],
+            "Dist. SL":   datos["Dist. SL"],
+            "Put Wall":   put_wall,
+            "Call Wall":  call_wall,
+            "GEX":        gex_ctx,
+            "_falta_raw": datos["pct_falta_raw"],
+            "_sl_raw":    datos["pct_sl_raw"],
         })
 
     if datos["rsi_raw"] < rsi_umbral:
         lista_rsi.append({
             "Ticker":    datos["Ticker"],
-            "Fecha":     datos["Fecha"],
             "Banda":     datos["Banda"],
             "Precio":    datos["Precio"],
             "RSI":       datos["RSI"],
@@ -554,8 +578,9 @@ for idx, ticker in enumerate(tickers):
             "GEX":       gex_ctx,
         })
 
+# Finalizar
 progreso.empty()
-st.success(f"✅ Escáner completado — {len(tickers)} tickers procesados")
+status_box.success(f"✅ Escáner completado — {len(tickers)} tickers procesados")
 m_compras.metric("🚀 Compras + ADD", len(lista_compras))
 m_rsi.metric(f"📉 RSI < {rsi_umbral}", len(lista_rsi))
 m_radar.metric("🎯 Radar OJO/BTD", len(lista_radar))
@@ -578,9 +603,10 @@ def colorear_rsi(v):
     return "color:#94a3b8"
 
 def colorear_falta(v):
+    s = str(v)
+    if "sup." in s: return "color:#34d399;font-weight:600"
     try:
-        if "superado" in str(v): return "color:#34d399;font-weight:600"
-        r = float(str(v).replace('%','').replace('+',''))
+        r = float(s.replace('%','').replace('+',''))
         if r <= 2:  return "color:#34d399;font-weight:600"
         if r <= 5:  return "color:#fbbf24;font-weight:600"
     except Exception:
@@ -596,6 +622,44 @@ def colorear_sl(v):
         pass
     return "color:#94a3b8"
 
+# Glosarios por sección
+GLOSARIO_COMPRAS = """
+<div class="glosario">
+<b>Banda</b> — BC (baja volatilidad, tendencias limpias) · VOL (alta volatilidad, movimientos amplios) &nbsp;|&nbsp;
+<b>Antigüedad</b> — días desde la vela gatillo &nbsp;|&nbsp;
+<b>Gatillos</b> — señales técnicas que activaron la entrada · ⚡ = señal ADD sobre posición abierta &nbsp;|&nbsp;
+<b>P.Entrada</b> — precio de cierre de la vela gatillo &nbsp;|&nbsp;
+<b>Precio</b> — precio actual de mercado &nbsp;|&nbsp;
+<b>RSI</b> — momentum: rojo &lt;33 sobreventa · verde &gt;65 sobrecompra &nbsp;|&nbsp;
+<b>ADX</b> — fuerza de tendencia (>25 tendencia relevante) &nbsp;|&nbsp;
+<b>TP1</b> — objetivo de precio calculado desde la vela gatillo (Entrada + ATR × multiplicador) &nbsp;|&nbsp;
+<b>Falta TP1</b> — distancia del precio actual al objetivo · ✅ = ya superado &nbsp;|&nbsp;
+<b>SL −3%</b> — nivel de stop loss: 3% bajo el precio de entrada &nbsp;|&nbsp;
+<b>Dist. SL</b> — margen entre precio actual y stop loss · rojo = muy cerca del stop &nbsp;|&nbsp;
+<b>Put Wall</b> — nivel de soporte gamma de opciones (próximas 5 semanas) &nbsp;|&nbsp;
+<b>Call Wall</b> — nivel de resistencia gamma de opciones &nbsp;|&nbsp;
+<b>GEX</b> — contexto gamma: 🟢 zona favorable · 🟠 cerca techo · 🔴 techo activo · 🟡 piso gamma
+</div>
+"""
+
+GLOSARIO_RSI = """
+<div class="glosario">
+<b>RSI</b> — índice de fuerza relativa Wilder: rojo &lt;33 sobreventa extrema &nbsp;|&nbsp;
+<b>J(V)</b> — componente J del KDJ: valores bajos (&lt;20) indican zona de posible giro alcista &nbsp;|&nbsp;
+<b>ADX</b> — fuerza de la tendencia dominante &nbsp;|&nbsp;
+<b>Put Wall / Call Wall</b> — soporte y resistencia de opciones próximas 5 semanas &nbsp;|&nbsp;
+<b>GEX</b> — contexto gamma actual del activo
+</div>
+"""
+
+GLOSARIO_RADAR = """
+<div class="glosario">
+<b>OJO 🟡</b> — alerta temprana: RSI &lt;35, J(V) &lt;28 y precio cerca o bajo banda inferior Bollinger. No es señal de compra, es zona de vigilancia &nbsp;|&nbsp;
+<b>BTD 🟢</b> — Buy The Dip confirmado: ayer fue OJO + hoy J cruza al alza + MACD gira. Señal más madura que OJO &nbsp;|&nbsp;
+<b>BB_DN</b> — banda inferior de Bollinger: referencia del soporte técnico dinámico
+</div>
+"""
+
 # ======================================================================
 # TABS
 # ======================================================================
@@ -607,21 +671,21 @@ tab1, tab2, tab3 = st.tabs([
 
 with tab1:
     st.markdown("#### Señales activas — compras frescas y ADD")
-    st.caption("TP1 y SL calculados desde la vela gatillo · ⚡ = señal ADD · Falta %TP1 = distancia al objetivo · Dist. SL = margen antes del stop")
+    st.markdown(GLOSARIO_COMPRAS, unsafe_allow_html=True)
     if lista_compras:
         df1 = pd.DataFrame(lista_compras)
         df1['_ord'] = df1['Gatillos'].apply(lambda x: 1 if '⚡' in str(x) and not any(
             g in str(x) for g in ['S_PULL','S_IMPU','S_BOLL','S_SUELO','S_MACD','S_EARLY','S_REBOTE','SOFT']
         ) else 0)
-        df1 = df1.sort_values('_ord').drop(columns='_ord').reset_index(drop=True)
+        df1 = df1.sort_values('_ord').drop(columns=['_ord','_falta_raw','_sl_raw']).reset_index(drop=True)
         df1.index = range(1, len(df1)+1)
         styled = df1.style\
             .map(colorear_banda,  subset=["Banda"])\
             .map(colorear_rsi,    subset=["RSI"])\
-            .map(colorear_falta,  subset=["Falta %TP1"])\
+            .map(colorear_falta,  subset=["Falta TP1"])\
             .map(colorear_sl,     subset=["Dist. SL"])
         st.dataframe(styled, use_container_width=True)
-        c1, c2 = st.columns([1,4])
+        c1, c2, _ = st.columns([1,1,4])
         with c1:
             st.download_button("⬇️ Excel", exportar_excel({"Compras": df1.reset_index(drop=True)}),
                                "compras_sg6.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -632,6 +696,7 @@ with tab1:
 
 with tab2:
     st.markdown(f"#### Activos con RSI < {rsi_umbral}")
+    st.markdown(GLOSARIO_RSI, unsafe_allow_html=True)
     if lista_rsi:
         df2 = pd.DataFrame(lista_rsi).sort_values("RSI").reset_index(drop=True)
         df2.index = range(1, len(df2)+1)
@@ -639,7 +704,7 @@ with tab2:
             .map(colorear_banda, subset=["Banda"])\
             .map(colorear_rsi,   subset=["RSI"])
         st.dataframe(styled2, use_container_width=True)
-        c1, c2 = st.columns([1,4])
+        c1, c2, _ = st.columns([1,1,4])
         with c1:
             st.download_button("⬇️ Excel", exportar_excel({"Sobreventa": df2.reset_index(drop=True)}),
                                "sobreventa_sg6.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -650,6 +715,7 @@ with tab2:
 
 with tab3:
     st.markdown("#### Radar temprano — formación de suelo")
+    st.markdown(GLOSARIO_RADAR, unsafe_allow_html=True)
     if lista_radar:
         df3 = pd.DataFrame(lista_radar)
         df3["_ord"] = df3["Señal"].apply(lambda x: 0 if "BTD" in x else 1)
@@ -659,7 +725,7 @@ with tab3:
             .map(colorear_banda, subset=["Banda"])\
             .map(colorear_rsi,   subset=["RSI"])
         st.dataframe(styled3, use_container_width=True)
-        c1, c2 = st.columns([1,4])
+        c1, c2, _ = st.columns([1,1,4])
         with c1:
             st.download_button("⬇️ Excel", exportar_excel({"Radar": df3.reset_index(drop=True)}),
                                "radar_sg6.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
