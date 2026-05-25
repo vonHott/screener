@@ -60,6 +60,7 @@ html, body, [class*="css"] { font-family: 'Inter', 'Segoe UI', sans-serif; }
 """, unsafe_allow_html=True)
 
 TICKERS_DEFAULT = [
+    # ORIGINALES SG6
     "CHWY","ALT","PLTR","RBRK","MORN","CBRS","ISRG","MDT","DG","EPAM",
     "BRK-B","NCLH","CLS","GILD","FSLR","RTX","PSX","NBIS","ZTS","FICO",
     "BAC","GS","NOW","RMBS","MRVL","COF","BHP","ETH-USD","SOL-USD","BTI",
@@ -75,7 +76,18 @@ TICKERS_DEFAULT = [
     "GE","ABT","AMZN","BTC-USD","SOUN","IBM","SMH","URA","CEG","NVO","MRK",
     "SPOT","EQIX","BA","FCX","AEM","MSTR","PEP","KO","WMT","PFE","DIS",
     "JNJ","MCD","JPM","MA","CAT","SBUX","PG","UNH","NVDA","NFLX","MELI",
-    "NKE","META","ORCL","ASML","TSLA","AMD","QQQM","VOO","ACHR","LINK-USD","AVAX-USD"
+    "NKE","META","ORCL","ASML","TSLA","AMD","QQQM","VOO","ACHR","LINK-USD","AVAX-USD",
+    # FUTUROS Y MATERIAS PRIMAS
+    "CL=F","NG=F","SI=F","HG=F","GC=F","NQ=F",
+    # FOREX
+    "EURUSD=X","USDCHF=X","GBPUSD=X","USDJPY=X",
+    "USDCOP=X","USDCLP=X","USDBRL=X","DX-Y.NYB",
+    # ACCIONES USA ADICIONALES
+    "ZIM","DLTR","BBY","WBD","UNG","GT","WYNN","MGM",
+    "SNAP","CVNA","ROKU","HUM","ELV","UHS",
+    "ILMN","SWK","FNV","SBSW","GOLD","SQM","ALB","GSK","AZN",
+    # INTERNACIONALES
+    "BAYN.DE","ADS.DE","ROG.SW","FRE.DE","9988.HK",
 ]
 
 # ======================================================================
@@ -567,8 +579,6 @@ lc  = st.session_state.lista_compras
 lr  = st.session_state.lista_rsi
 lrd = st.session_state.lista_radar
 ru  = st.session_state.rsi_umbral_run
-
-st.success(f"✅ Escáner completado — {len(TICKERS_DEFAULT)} tickers procesados")
 
 # Botones-contadores
 c1,c2,c3 = st.columns(3)
