@@ -689,9 +689,9 @@ with tab1:
         df1 = df1.sort_values('_ord').drop(columns='_ord').reset_index(drop=True)
         df1.index = range(1, len(df1)+1)
         styled = df1.style\
-            .applymap(colorear_banda, subset=["Banda"])\
-            .applymap(colorear_rsi,   subset=["RSI"])\
-            .applymap(colorear_pct,   subset=["%TP1"])
+            .map(colorear_banda, subset=["Banda"])\
+            .map(colorear_rsi,   subset=["RSI"])\
+            .map(colorear_pct,   subset=["%TP1"])
         st.dataframe(styled, use_container_width=True)
         col_dl1, col_dl2 = st.columns([1,4])
         with col_dl1:
