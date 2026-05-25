@@ -212,7 +212,6 @@ def calcular_gex(ticker_name, precio_actual):
         return {"Put Wall":f"${pw:.2f}","Call Wall":f"${cw:.2f}","GEX":f"{e} {c}"}
     except Exception: return None
 
-@st.cache_data(ttl=14400, show_spinner=False)
 def analizar_ticker(ticker_name, periodo):
     try:
         df=yf.download(ticker_name,period=periodo,progress=False,auto_adjust=True)
