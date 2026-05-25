@@ -710,8 +710,8 @@ with tab2:
         df2 = pd.DataFrame(lista_rsi).sort_values("RSI").reset_index(drop=True)
         df2.index = range(1, len(df2)+1)
         styled2 = df2.style\
-            .applymap(colorear_banda, subset=["Banda"])\
-            .applymap(colorear_rsi,   subset=["RSI"])
+            .map(colorear_banda, subset=["Banda"])\
+            .map(colorear_rsi,   subset=["RSI"])
         st.dataframe(styled2, use_container_width=True)
         col_dl1, col_dl2 = st.columns([1,4])
         with col_dl1:
@@ -732,8 +732,8 @@ with tab3:
         df3 = df3.sort_values(["_ord","RSI"]).drop(columns="_ord").reset_index(drop=True)
         df3.index = range(1, len(df3)+1)
         styled3 = df3.style\
-            .applymap(colorear_banda, subset=["Banda"])\
-            .applymap(colorear_rsi,   subset=["RSI"])
+            .map(colorear_banda, subset=["Banda"])\
+            .map(colorear_rsi,   subset=["RSI"])
         st.dataframe(styled3, use_container_width=True)
         col_dl1, col_dl2 = st.columns([1,4])
         with col_dl1:
