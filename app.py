@@ -1,6 +1,7 @@
 # ======================================================================
-# SG6 SCREENER — APP STREAMLIT V20
-# Santo Grial 6 · Para Inversores
+# SG6 SCREENER MÓVIL — V1
+# Versión optimizada para celular
+# Sin sidebar · Todo vertical · Landing + Resultados
 # ======================================================================
 
 import streamlit as st
@@ -18,49 +19,86 @@ except ImportError:
     USE_PANDAS_TA = False
 
 st.set_page_config(
-    page_title="SG6 Screener · Santo Grial",
+    page_title="SG6 · Santo Grial",
     page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="centered",
+    initial_sidebar_state="collapsed"
 )
 
 st.markdown("""
 <style>
 html, body, [class*="css"] { font-family: 'Inter', 'Segoe UI', sans-serif; }
-.main-header {
+
+/* Ocultar sidebar completamente */
+[data-testid="stSidebar"] { display: none !important; }
+[data-testid="collapsedControl"] { display: none !important; }
+
+/* Header compacto */
+.mob-header {
     background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
     border: 1px solid #334155;
-    border-radius: 8px;
-    padding: 20px 28px;
-    margin-bottom: 20px;
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin-bottom: 16px;
+    text-align: center;
 }
-.main-header h1 { color: #f1f5f9; font-size: 22px; font-weight: 600; letter-spacing: -0.3px; margin: 0 0 4px 0; }
-.main-header p  { color: #64748b; font-size: 12px; margin: 0; letter-spacing: 0.5px; }
-[data-testid="stDataFrame"] { border: 1px solid #1e293b; border-radius: 6px; overflow: hidden; }
-[data-testid="stSidebar"] { background: #0f172a; border-right: 1px solid #1e293b; }
-.glosario { background: #0f172a; border: 1px solid #1e293b; border-radius: 6px; padding: 12px 16px; margin-bottom: 12px; font-size: 12px; color: #64748b; line-height: 1.8; }
-.glosario b { color: #94a3b8; }
-.footer-cap { color: #334155; font-size: 11px; text-align: center; padding-top: 16px; }
-.seccion-header { border-left: 3px solid #38bdf8; padding-left: 12px; margin-bottom: 16px; }
-.seccion-header h4 { color: #f1f5f9; margin: 0; font-size: 16px; font-weight: 600; }
-.seccion-header p  { color: #64748b; margin: 0; font-size: 12px; }
-.idx-card { background: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 16px 20px; }
-.idx-name { color: #64748b; font-size: 11px; letter-spacing: .1em; margin-bottom: 4px; }
-.idx-price { color: #f1f5f9; font-size: 22px; font-weight: 700; margin-bottom: 2px; }
-.idx-up   { color: #34d399; font-size: 14px; font-weight: 600; }
-.idx-down { color: #f87171; font-size: 14px; font-weight: 600; }
-.news-item { border-bottom: 1px solid #1e293b; padding: 10px 0; }
-.news-item a { color: #38bdf8; text-decoration: none; font-size: 13px; }
-.news-item span { color: #475569; font-size: 11px; margin-left: 8px; }
-.hot-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #1e293b; font-size: 13px; }
-.vix-ok   { color: #34d399; font-weight: 700; }
-.vix-warn { color: #fbbf24; font-weight: 700; }
-.vix-bad  { color: #f87171; font-weight: 700; }
+.mob-header h1 { color: #f1f5f9; font-size: 18px; font-weight: 700; margin: 0 0 2px 0; }
+.mob-header p  { color: #64748b; font-size: 10px; margin: 0; letter-spacing: 0.5px; }
+
+/* Cards de índices */
+.idx-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+.idx-card { background: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 10px 14px; }
+.idx-name  { color: #475569; font-size: 9px; letter-spacing: .08em; margin-bottom: 2px; }
+.idx-price { color: #f1f5f9; font-size: 17px; font-weight: 700; }
+.idx-up    { color: #34d399; font-size: 12px; font-weight: 600; }
+.idx-down  { color: #f87171; font-size: 12px; font-weight: 600; }
+
+/* VIX / BTC */
+.ctx-card { background: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 10px 14px; margin-bottom: 8px; }
+.ctx-label { color: #475569; font-size: 9px; letter-spacing: .08em; }
+.ctx-val   { color: #f1f5f9; font-size: 15px; font-weight: 700; }
+.vix-ok   { color: #34d399; font-size: 12px; font-weight: 600; }
+.vix-warn { color: #fbbf24; font-size: 12px; font-weight: 600; }
+.vix-bad  { color: #f87171; font-size: 12px; font-weight: 600; }
+
+/* Noticias */
+.news-item { border-bottom: 1px solid #1e293b; padding: 8px 0; font-size: 12px; }
+.news-item a { color: #38bdf8; text-decoration: none; }
+.news-src  { color: #475569; font-size: 10px; margin-left: 6px; }
+
+/* Hot list */
+.hot-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #1e293b; font-size: 12px; }
+
+/* Configuracion landing */
+.config-card { background: #0f172a; border: 1px solid #1e293b; border-radius: 10px; padding: 16px; margin-bottom: 12px; }
+.config-card h3 { color: #94a3b8; font-size: 12px; letter-spacing: .08em; margin: 0 0 10px 0; }
+
+/* Botones resultado */
+[data-testid="stButton"] button {
+    background: #0f172a !important;
+    border: 1px solid #1e293b !important;
+    border-radius: 8px !important;
+    color: #f1f5f9 !important;
+    font-size: 13px !important;
+    font-weight: 600 !important;
+    width: 100% !important;
+    padding: 12px !important;
+}
+[data-testid="stButton"] button:hover { border-color: #38bdf8 !important; }
+
+/* Tabla compacta */
+[data-testid="stDataFrame"] { border: 1px solid #1e293b; border-radius: 6px; font-size: 11px; }
+
+.footer-cap { color: #334155; font-size: 10px; text-align: center; padding: 12px 0; }
+.seccion-header { border-left: 3px solid #38bdf8; padding-left: 10px; margin: 12px 0; }
+.seccion-header h4 { color: #f1f5f9; font-size: 14px; font-weight: 600; margin: 0; }
 </style>
 """, unsafe_allow_html=True)
 
+# ======================================================================
+# WATCHLIST
+# ======================================================================
 TICKERS_DEFAULT = [
-    # ORIGINALES SG6
     "CHWY","ALT","PLTR","RBRK","MORN","CBRS","ISRG","MDT","DG","EPAM",
     "BRK-B","NCLH","CLS","GILD","FSLR","RTX","PSX","NBIS","ZTS","FICO",
     "BAC","GS","NOW","RMBS","MRVL","COF","BHP","ETH-USD","SOL-USD","BTI",
@@ -77,16 +115,10 @@ TICKERS_DEFAULT = [
     "SPOT","EQIX","BA","FCX","AEM","MSTR","PEP","KO","WMT","PFE","DIS",
     "JNJ","MCD","JPM","MA","CAT","SBUX","PG","UNH","NVDA","NFLX","MELI",
     "NKE","META","ORCL","ASML","TSLA","AMD","QQQM","VOO","ACHR","LINK-USD","AVAX-USD",
-    # FUTUROS Y MATERIAS PRIMAS
     "CL=F","NG=F","SI=F","HG=F","GC=F","NQ=F",
-    # FOREX
-    "EURUSD=X","USDCHF=X","GBPUSD=X","USDJPY=X",
-    "USDCOP=X","USDCLP=X","USDBRL=X","DX-Y.NYB",
-    # ACCIONES USA ADICIONALES
-    "ZIM","DLTR","BBY","WBD","UNG","GT","WYNN","MGM",
-    "SNAP","CVNA","ROKU","HUM","ELV","UHS",
-    "ILMN","SWK","FNV","SBSW","GOLD","SQM","ALB","GSK","AZN",
-    # INTERNACIONALES
+    "EURUSD=X","USDCHF=X","GBPUSD=X","USDJPY=X","USDCOP=X","USDCLP=X","USDBRL=X","DX-Y.NYB",
+    "ZIM","DLTR","BBY","WBD","UNG","GT","WYNN","MGM","SNAP","CVNA","ROKU",
+    "HUM","ELV","UHS","ILMN","SWK","FNV","SBSW","GOLD","SQM","ALB","GSK","AZN",
     "BAYN.DE","ADS.DE","ROG.SW","FRE.DE","9988.HK",
 ]
 
@@ -113,139 +145,69 @@ def calcular_rsi(close_series, periodo=14):
     rsi = 100-(100/(1+rs)); rsi[:periodo] = np.nan
     return pd.Series(rsi, index=close_series.index)
 
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def get_market_data():
-    """Índices, VIX, BTC y noticias — cache 15 min"""
-    indices = {"S&P 500":"^GSPC","Nasdaq 100":"^NDX","Dow Jones":"^DJI","Russell 2000":"^RUT"}
+    indices = {"S&P 500":"^GSPC","Nasdaq":"^NDX","Dow":"^DJI","Russell":"^RUT"}
     result = {}
     for name, sym in indices.items():
         try:
-            t = yf.Ticker(sym)
-            h = t.history(period="2d")
-            if len(h) >= 2:
-                prev = float(h['Close'].iloc[-2])
-                curr = float(h['Close'].iloc[-1])
-                pct  = (curr-prev)/prev*100
-                result[name] = {"price": curr, "pct": pct}
+            h = yf.Ticker(sym).history(period="2d")
+            if len(h)>=2:
+                prev = float(h['Close'].iloc[-2]); curr = float(h['Close'].iloc[-1])
+                result[name] = {"price":curr,"pct":(curr-prev)/prev*100}
         except Exception:
-            result[name] = {"price": 0, "pct": 0}
-
-    # VIX
+            result[name] = {"price":0,"pct":0}
     vix_val = 0
     try:
         h = yf.Ticker("^VIX").history(period="1d")
         if not h.empty: vix_val = float(h['Close'].iloc[-1])
     except Exception: pass
-
-    # BTC
     btc_pct = 0
     try:
         h = yf.Ticker("BTC-USD").history(period="2d")
         if len(h)>=2: btc_pct = (float(h['Close'].iloc[-1])-float(h['Close'].iloc[-2]))/float(h['Close'].iloc[-2])*100
     except Exception: pass
-
-    # Noticias del mercado via SPY
     noticias = []
     try:
-        news = yf.Ticker("SPY").news
-        for n in (news or [])[:6]:
-            title   = n.get("title","")
-            link    = n.get("link","#")
-            source  = n.get("source","") or n.get("publisher","")
-            if title:
-                noticias.append({"title":title,"link":link,"source":source})
+        for sym in ["SPY","QQQ"]:
+            try:
+                tk = yf.Ticker(sym)
+                news = tk.get_news() if hasattr(tk,'get_news') else tk.news
+                for n in (news or []):
+                    title  = n.get("title","")
+                    link   = n.get("link","") or n.get("url","#")
+                    source = n.get("source","") or n.get("publisher","")
+                    if title and not any(x["title"]==title for x in noticias):
+                        noticias.append({"title":title,"link":link,"source":source})
+                if len(noticias)>=5: break
+            except Exception: continue
     except Exception: pass
-
-    # Más activas del mercado — yfinance screener
     hot = []
     try:
-        screener = yf.screen("most_active", size=8)
-        quotes   = screener.get("quotes",[]) if screener else []
-        for q in quotes:
-            sym  = q.get("symbol","")
-            pct  = q.get("regularMarketChangePercent",0) or 0
-            vol  = q.get("regularMarketVolume",0) or 0
-            avol = q.get("averageDailyVolume3Month",1) or 1
-            price= q.get("regularMarketPrice",0) or 0
-            vrel = vol/avol if avol>0 else 1
-            hot.append({"Ticker":sym,"Precio":f"${price:.2f}","% Día":f"{pct:+.2f}%","Vol ×":f"×{vrel:.1f}","_pct":pct})
+        sc = yf.screen("most_active", size=8)
+        for q in (sc.get("quotes",[]) if sc else []):
+            sym=q.get("symbol",""); pct=q.get("regularMarketChangePercent",0) or 0
+            vol=q.get("regularMarketVolume",0) or 0; avol=q.get("averageDailyVolume3Month",1) or 1
+            price=q.get("regularMarketPrice",0) or 0
+            if sym: hot.append({"T":sym,"P":f"${price:.2f}","Δ":f"{pct:+.1f}%","V×":f"×{vol/avol:.1f}","_p":pct})
     except Exception:
-        # Fallback si screener no disponible
-        fallback = ["NVDA","TSLA","AMD","AAPL","AMZN","META","MSFT","SPY"]
-        for sym in fallback:
+        for sym in ["NVDA","TSLA","AAPL","AMZN","META","AMD","MSFT","SPY"]:
             try:
                 h = yf.Ticker(sym).history(period="2d")
                 if len(h)>=2:
-                    p = float(h['Close'].iloc[-1])
-                    pc = (p-float(h['Close'].iloc[-2]))/float(h['Close'].iloc[-2])*100
-                    hot.append({"Ticker":sym,"Precio":f"${p:.2f}","% Día":f"{pc:+.2f}%","Vol ×":"—","_pct":pc})
+                    p=float(h['Close'].iloc[-1]); pc=(p-float(h['Close'].iloc[-2]))/float(h['Close'].iloc[-2])*100
+                    hot.append({"T":sym,"P":f"${p:.2f}","Δ":f"{pc:+.1f}%","V×":"—","_p":pc})
             except Exception: pass
-
     return result, vix_val, btc_pct, noticias, hot
-
-@st.cache_data(ttl=14400, show_spinner=False)
-def calcular_gex(ticker_name, precio_actual):
-    try:
-        tk = yf.Ticker(ticker_name); exps = tk.options
-        if not exps: return None
-        puts_all, calls_all = [], []
-        total_put_vol, total_call_vol = 0, 0
-        total_put_oi,  total_call_oi  = 0, 0
-        for exp in exps[:5]:
-            try:
-                c = tk.option_chain(exp)
-                puts_all.append(c.puts[['strike','openInterest']].copy())
-                calls_all.append(c.calls[['strike','openInterest']].copy())
-                # Sumar volumen y OI para PCR real
-                pv = c.puts['volume'].fillna(0).sum()
-                cv = c.calls['volume'].fillna(0).sum()
-                po = c.puts['openInterest'].fillna(0).sum()
-                co = c.calls['openInterest'].fillna(0).sum()
-                total_put_vol  += pv
-                total_call_vol += cv
-                total_put_oi   += po
-                total_call_oi  += co
-            except Exception: continue
-        if not puts_all or not calls_all: return None
-        pd_ = pd.concat(puts_all).groupby('strike')['openInterest'].sum().reset_index()
-        cd_ = pd.concat(calls_all).groupby('strike')['openInterest'].sum().reset_index()
-        rlo, rhi = precio_actual*0.70, precio_actual*1.30
-        pd_ = pd_[(pd_['strike']>=rlo)&(pd_['strike']<=rhi)]
-        cd_ = cd_[(cd_['strike']>=rlo)&(cd_['strike']<=rhi)]
-        if pd_.empty or cd_.empty: return None
-        pw = float(pd_.loc[pd_['openInterest'].idxmax(),'strike'])
-        cw = float(cd_.loc[cd_['openInterest'].idxmax(),'strike'])
-        if precio_actual > cw:   e, ctx = "🔴", "Techo gamma"
-        elif precio_actual < pw: e, ctx = "🟡", "Piso gamma"
-        else:
-            d1, d2 = precio_actual-pw, cw-precio_actual
-            e, ctx = ("🟠","Cerca techo") if d2<d1*0.4 else ("🟢","Zona favorable")
-        # PCR por volumen (preferido) — fallback a OI si volumen es 0
-        if total_call_vol > 0:
-            pcr = round(total_put_vol / total_call_vol, 2)
-            pcr_tipo = "Vol"
-        elif total_call_oi > 0:
-            pcr = round(total_put_oi / total_call_oi, 2)
-            pcr_tipo = "OI"
-        else:
-            pcr, pcr_tipo = 0, "—"
-        if   pcr == 0:    pcr_label = "—"
-        elif pcr < 0.7:   pcr_label = "🟢 Alcista"
-        elif pcr > 1.0:   pcr_label = "🔴 Bajista"
-        else:             pcr_label = "⚪ Neutral"
-        pcr_str = f"{pcr:.2f} {pcr_label}" if pcr > 0 else "—"
-        return {"Put Wall":f"${pw:.2f}","Call Wall":f"${cw:.2f}","GEX":f"{e} {ctx}","P/C":pcr_str}
-    except Exception: return None
 
 def analizar_ticker(ticker_name, periodo):
     try:
-        df=yf.download(ticker_name,period=periodo,progress=False,auto_adjust=True)
-        if df.empty: return None,"Sin datos en yfinance"
-        if isinstance(df.columns,pd.MultiIndex): df.columns=df.columns.get_level_values(0)
-    except Exception as e: return None,str(e)[:60]
-    df=df.dropna(subset=['Close','Volume']); df=df[df['Volume']>0].copy()
-    if len(df)<250: return None,f"Pocas velas: {len(df)}"
-
+        df = yf.download(ticker_name, period=periodo, progress=False, auto_adjust=True)
+        if df.empty: return None,"Sin datos"
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+    except Exception as e: return None, str(e)[:40]
+    df = df.dropna(subset=['Close','Volume']); df = df[df['Volume']>0].copy()
+    if len(df)<250: return None,f"Pocas velas"
     df['RET_V']=df['Close'].pct_change()*100
     df['BETA_RAW']=df['RET_V'].rolling(60).std(ddof=0)
     df['BETA_S']=df['BETA_RAW'].rolling(20).mean()
@@ -253,7 +215,6 @@ def analizar_ticker(ticker_name, periodo):
     df['MA20']=df['Close'].ewm(span=20,adjust=False).mean()
     df['MA50']=df['Close'].ewm(span=50,adjust=False).mean()
     df['MA200']=df['Close'].ewm(span=200,adjust=False).mean()
-    df['F_BAJISTA']=df['Close']<df['MA200']; df['F_ALCISTA']=df['Close']>df['MA200']
     df['MA20_UP']=df['MA20']>df['MA20'].shift(1)
     df['FILTRO_BASE']=df['Close']>=df['MA200']
     df['H_L']=df['High']-df['Low']
@@ -269,13 +230,7 @@ def analizar_ticker(ticker_name, periodo):
     df['MDI']=df['DMM_RAW'].rolling(14).sum()*100/t14
     s14=(df['PDI']+df['MDI']).replace(0,1e-8)
     df['ADX_V']=(abs(df['PDI']-df['MDI'])/s14*100).rolling(9).mean()
-    df['ADX_REQ']=np.where(df['F_BAJISTA'],28,20)
-    t6=df['TR_V'].rolling(6).sum().replace(0,1e-8)
-    df['PDI_A']=df['DMP_RAW'].rolling(6).sum()*100/t6
-    df['MDI_A']=df['DMM_RAW'].rolling(6).sum()*100/t6
-    s6=(df['PDI_A']+df['MDI_A']).replace(0,1e-8)
-    df['ADX_A']=(abs(df['PDI_A']-df['MDI_A'])/s6*100).rolling(6).mean()
-    df['ADX_A_ACCEL']=(df['ADX_A']>df['ADX_A'].shift(1))&(df['ADX_A'].shift(1)>df['ADX_A'].shift(2))
+    df['ADX_REQ']=np.where(df['Close']<df['MA200'],28,20)
     lm=df['Low'].rolling(9).min(); hm=df['High'].rolling(9).max()
     dk=(hm-lm).replace(0,1e-8)
     df['RSV']=(df['Close']-lm)/dk*100
@@ -289,112 +244,202 @@ def analizar_ticker(ticker_name, periodo):
     df['HISTO']=df['DIF']-df['DEA']
     df['GIRO_MACD']=(df['HISTO']>df['HISTO'].shift(1))&(df['HISTO'].shift(1)<=df['HISTO'].shift(2))
     df['MACD_GIRO_NEG']=(df['HISTO']<0)&(df['HISTO']<df['HISTO'].shift(1))&(df['HISTO'].shift(1)<df['HISTO'].shift(2))
-    df['MACD_CONV_ALCI']=(df['HISTO']<0)&(df['HISTO']>df['HISTO'].shift(1))&(df['HISTO']>df['HISTO'].shift(2))
     df['OSC']=calcular_rsi(df['Close'],14)
     df['BB_MID']=df['Close'].rolling(20).mean()
     df['BB_STD']=df['Close'].rolling(20).std(ddof=0)
     df['BB_DN']=df['BB_MID']-2*df['BB_STD']
     df['VOL_MA']=df['Volume'].rolling(20).mean()
-
-    # FILTROS CONTEXTO MA50/MA200 — evita comprar en medias cayendo (CRH v3)
-    df['MA50_ALCISTA']    = df['MA50'] > df['MA50'].shift(5)
-    df['VENIA_MA50']      = df['Close'].shift(1).gt(df['MA50']).rolling(3).sum() >= 2
-    df['MA200_PLANA']     = df['MA200'] >= df['MA200'].shift(3)
-    df['MA50_SUBE']       = df['MA50'] > df['MA50'].shift(3)
-
-    # S_PULL mejorado: solo pullbacks en tendencia alcista real
-    df['S_PULL']=(df['Low']<df['MA50']*1.015)&(df['Close']>df['MA50']*0.985)&df['GIRO_J']&(df['Volume']>df['VOL_MA']*1.02)&df['MA50_ALCISTA']&df['VENIA_MA50']&(df['ADX_V']>18)
-    # S_IMPU: ruptura con fuerza
+    # Filtros MA
+    df['MA50_ALCISTA']=df['MA50']>df['MA50'].shift(5)
+    df['VENIA_MA50']=df['Close'].shift(1).gt(df['MA50']).rolling(3).sum()>=2
+    df['MA200_PLANA']=df['MA200']>=df['MA200'].shift(3)
+    df['MA50_SUBE']=df['MA50']>df['MA50'].shift(3)
+    # Gatillos
+    df['S_PULL']=(df['Low']<df['MA50']*1.015)&(df['Close']>df['MA50']*0.985)&df['GIRO_J']&(df['Volume']>df['VOL_MA']*1.02)&df['MA50_ALCISTA']&df['VENIA_MA50']
     df['S_IMPU']=(df['Close']>df['High'].shift(1).rolling(5).max())&(df['ADX_V']>df['ADX_REQ'])&df['MA20_UP']&df['GIRO_J']&(df['Volume']>df['VOL_MA']*1.02)
-    # S_BOLL: rebote banda inferior
     df['S_BOLL']=(df['Low'].shift(1)<=df['BB_DN'])&(df['Close']>df['BB_DN'])&df['GIRO_J']&df['GIRO_MACD']&(df['Volume']>df['VOL_MA']*0.88)
-    # S_SUELO: sobreventa extrema
     df['S_SUELO']=(df['OSC']<35)&(df['J_V']<25)&(df['Close']>df['Low'].shift(1))&df['GIRO_MACD']&(df['Volume']>df['VOL_MA']*0.88)
     df['CX_MACD']=(df['DIF']>df['DEA'])&(df['DIF'].shift(1)<=df['DEA'].shift(1))
-    # S_MACD_CROSS: cruce MACD
     df['S_MACD_CROSS']=df['CX_MACD']&(df['HISTO']>df['HISTO'].shift(1))&df['MA20_UP']&(df['Volume']>df['VOL_MA']*1.02)
-    # S_EARLY: cruce KD anticipado
     df['S_EARLY']=(df['OSC']<40)&(df['J_V']<30)&df['CROSS_KD']&df['MA20_UP']&(df['Volume']>df['VOL_MA']*0.88)
-    # S_CONT: continuacion de tendencia (nuevo de CRH)
     df['S_CONT']=(df['Close']>df['High'].shift(1).rolling(10).max())&(df['Close']>df['MA50'])&df['MA50_SUBE']&df['GIRO_J']
-    # S_R200 mejorado: solo cuando MA200 es soporte real
     df['S_R200']=(df['Low']<=df['MA200']*1.01)&(df['Close']>df['MA200'])&(df['Close']>df['Low'].shift(1))&df['GIRO_J']&df['MA20_UP']&df['MA200_PLANA']&(df['Volume']>df['VOL_MA']*1.02)
-    # S_BSOFT: rebote BB sin MACD negativo
     df['S_BSOFT']=(df['Low'].shift(1)<=df['BB_DN'])&(df['Close']>df['BB_DN'])&(df['Close']>df['Low'].shift(1))&df['GIRO_J']&(df['Volume']>df['VOL_MA']*0.88)&~df['MACD_GIRO_NEG']
-
     is_bc=df['BANDA']=="BC"; is_vol=df['BANDA']=="VOL"
     sbc=df['S_PULL']|df['S_IMPU']|df['S_BOLL']|df['S_SUELO']|df['S_MACD_CROSS']|df['S_EARLY']|df['S_CONT']|df['S_R200']|df['S_BSOFT']
     svol=df['S_IMPU']|df['S_BOLL']|df['S_SUELO']|df['S_MACD_CROSS']|df['S_CONT']|df['S_R200']|df['S_BSOFT']
     df['B_RAW']=(is_bc&sbc)|(is_vol&svol)
-
     b_raw_arr=df['B_RAW'].values
     dias_activa=0
     for k in range(len(b_raw_arr)-1,max(len(b_raw_arr)-6,-1),-1):
         if b_raw_arr[k]: dias_activa+=1
         else: break
-
     e_price,atr_entry=None,None
     if dias_activa>0:
         idx_e=len(df)-dias_activa
         if idx_e>=0:
             e_price=float(df['Close'].iloc[idx_e])
             atr_entry=float(df['ATR_V'].iloc[idx_e])
-
     precio=float(df['Close'].iloc[-1]); banda=df['BANDA'].iloc[-1]
     tp_mult=1.6 if banda=="BC" else 2.2
-
     if e_price and atr_entry:
         tp1=e_price+atr_entry*tp_mult; sl=e_price*0.97
-        pf=(tp1-precio)/precio*100; pd_=(precio-sl)/precio*100
+        pf=(tp1-precio)/precio*100
         tp1_s=f"${tp1:.2f}"; sl_s=f"${sl:.2f}"; ep_s=f"${e_price:.2f}"
-        ft_s=f"✅ +{abs(pf):.1f}% sup." if pf<0 else f"{pf:+.1f}%"
-        ds_s=f"{pd_:.1f}%"
+        ft_s=f"✅{abs(pf):.1f}%sup" if pf<0 else f"{pf:+.1f}%"
     else:
-        tp1_s=sl_s=ep_s=ft_s=ds_s="—"; pf=0; pd_=99
-
-    i=len(df)-1
-    add_bc=(dias_activa>0 and banda=="BC" and df['PDI_A'].iloc[i]>df['MDI_A'].iloc[i] and df['ADX_A'].iloc[i]>28 and bool(df['ADX_A_ACCEL'].iloc[i]) and bool(df['CROSS_KD'].iloc[i]) and df['KVAL'].iloc[i]<75 and df['Close'].iloc[i]>df['MA20'].iloc[i] and df['Volume'].iloc[i]>df['VOL_MA'].iloc[i]*1.2)
-    add_vol=(dias_activa>0 and banda=="VOL" and df['PDI_A'].iloc[i]>df['MDI_A'].iloc[i] and df['ADX_A'].iloc[i]>32 and bool(df['ADX_A_ACCEL'].iloc[i]) and df['Close'].iloc[i]>df['High'].iloc[max(0,i-3):i].max() and df['Close'].iloc[i]>df['MA20'].iloc[i] and df['Volume'].iloc[i]>df['VOL_MA'].iloc[i]*1.4)
-    add_s="ADD-BC" if add_bc else ("ADD-VOL" if add_vol else None)
-
-    gmap={"S_PULL":"S_PULL","S_IMPU":"S_IMPU","S_BOLL":"S_BOLL","S_SUELO":"S_SUELO","S_MACD_CROSS":"S_MACD_CROSS","S_EARLY":"S_EARLY","S_CONT":"S_CONT","S_REBOTE_MA200":"S_R200","S_BOLL_SOFT":"S_BSOFT"}
+        tp1_s=sl_s=ep_s=ft_s="—"; pf=0
+    gmap={"PULL":"S_PULL","IMPU":"S_IMPU","BOLL":"S_BOLL","SUELO":"S_SUELO","MACD":"S_MACD_CROSS","EARLY":"S_EARLY","CONT":"S_CONT","R200":"S_R200","BSOFT":"S_BSOFT"}
     gatillos=[]
     if dias_activa>0:
         for nombre,col in gmap.items():
             if df[col].iloc[-1]: gatillos.append(nombre)
-    if add_s: gatillos.append(f"⚡{add_s}")
-
+    def safe(col): v=df[col].iloc[-1]; return float(v) if not pd.isna(v) else 0.0
+    rsi_v=safe('OSC'); adx_v=safe('ADX_V'); jv_v=safe('J_V')
     df['OJO']=((df['OSC']<35)&(df['J_V']<28)&(df['Close']<=df['BB_DN']*1.01)).fillna(False)
     df['CRUCE_J']=((df['J_V']>10)&(df['J_V'].shift(1).fillna(100)<=12)).fillna(False)
     df['BTD']=(df['OJO'].shift(1).fillna(False)&df['CRUCE_J']&df['GIRO_MACD'].fillna(False)).fillna(False)
-
-    def safe(col): v=df[col].iloc[-1]; return float(v) if not pd.isna(v) else 0.0
-    rsi_v=safe('OSC'); adx_v=safe('ADX_V'); jv_v=safe('J_V'); bdn_v=safe('BB_DN')
-
     return {
         "Ticker":ticker_name,"Banda":banda,
         "Precio":f"${precio:.2f}","precio_raw":precio,
-        "P.Entrada":ep_s,"RSI":f"{rsi_v:.1f}","rsi_raw":rsi_v,
-        "ADX":f"{adx_v:.1f}","J(V)":f"{jv_v:.1f}","BB_DN":f"${bdn_v:.2f}",
-        "Días":dias_activa,"Gatillos":", ".join(gatillos) if gatillos else "—",
-        "TP1":tp1_s,"Falta TP1":ft_s,"SL −3%":sl_s,"Dist. SL":ds_s,
-        "pf":pf,"pd":pd_,
+        "P.Ent":ep_s,"RSI":f"{rsi_v:.1f}","rsi_raw":rsi_v,
+        "ADX":f"{adx_v:.1f}","TP1":tp1_s,"SL":sl_s,"%TP":ft_s,
+        "Días":dias_activa,"Gatillos":",".join(gatillos) if gatillos else "—",
         "Radar_OJO":bool(df['OJO'].iloc[-2:].any()),
         "Radar_BTD":bool(df['BTD'].iloc[-2:].any()),
-        "Add_Senal":add_s,
     }, None
 
-def exportar_excel(dfs_dict):
-    buf=io.BytesIO()
-    with pd.ExcelWriter(buf,engine='openpyxl') as w:
-        for n,d in dfs_dict.items():
-            if d is not None and not d.empty: d.to_excel(w,sheet_name=n[:31],index=False)
-    return buf.getvalue()
+# ======================================================================
+# SESSION STATE
+# ======================================================================
+for k,v in [("listo",False),("compras",[]),("rsi",[]),("radar",[]),("seccion",None),("ru",33)]:
+    if k not in st.session_state: st.session_state[k]=v
 
-def dl_buttons(df_out,base):
-    c1,c2,_=st.columns([1,1,4])
-    with c1: st.download_button("⬇️ Excel",exportar_excel({base:df_out.reset_index(drop=True)}),f"{base}_sg6.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",key=f"xl_{base}")
-    with c2: st.download_button("⬇️ CSV",df_out.to_csv(index=False).encode("utf-8"),f"{base}_sg6.csv","text/csv",key=f"csv_{base}")
+# ======================================================================
+# HEADER
+# ======================================================================
+st.markdown("""
+<div class="mob-header">
+    <h1>📊 SG6 · Santo Grial</h1>
+    <p>KW-DNA · BC/VOL · 9 GATILLOS · ADD · RSI WILDER</p>
+</div>
+""", unsafe_allow_html=True)
+
+# ======================================================================
+# LANDING — pantalla inicial con datos de mercado + configuracion
+# ======================================================================
+if not st.session_state.listo:
+    with st.spinner("Cargando mercado..."):
+        indices, vix_val, btc_pct, noticias, hot = get_market_data()
+
+    # Índices 2x2
+    st.markdown('<div class="idx-grid">', unsafe_allow_html=True)
+    for name, data in indices.items():
+        p=data["price"]; pct=data["pct"]
+        sig="+" if pct>=0 else ""
+        cls="idx-up" if pct>=0 else "idx-down"
+        st.markdown(f'<div class="idx-card"><div class="idx-name">{name}</div><div class="idx-price">{p:,.0f}</div><div class="{cls}">{sig}{pct:.2f}%</div></div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # VIX + BTC en 2 columnas
+    c1,c2 = st.columns(2)
+    with c1:
+        vcls = "vix-ok" if vix_val<18 else ("vix-warn" if vix_val<25 else "vix-bad")
+        vtxt = "✅ Tranquilo" if vix_val<18 else ("⚠️ Moderado" if vix_val<25 else "🔴 Alto")
+        st.markdown(f'<div class="ctx-card"><div class="ctx-label">VIX</div><div class="ctx-val">{vix_val:.1f}</div><div class="{vcls}">{vtxt}</div></div>', unsafe_allow_html=True)
+    with c2:
+        bcls="idx-up" if btc_pct>=0 else "idx-down"
+        bsig="+" if btc_pct>=0 else ""
+        btxt="🟢 Riesgo ON" if btc_pct>=0 else "🔴 Riesgo OFF"
+        st.markdown(f'<div class="ctx-card"><div class="ctx-label">BTC</div><div class="ctx-val">{bsig}{btc_pct:.2f}%</div><div class="{bcls}">{btxt}</div></div>', unsafe_allow_html=True)
+
+    # Noticias + Hot compactos
+    with st.expander("📰 Noticias", expanded=False):
+        if noticias:
+            for n in noticias[:5]:
+                st.markdown(f'<div class="news-item"><a href="{n["link"]}" target="_blank">{n["title"]}</a><span class="news-src">{n["source"]}</span></div>', unsafe_allow_html=True)
+        else:
+            st.caption("Sin noticias disponibles.")
+
+    with st.expander("🔥 Más activas", expanded=False):
+        if hot:
+            for h in sorted(hot, key=lambda x:abs(x.get("_p",0)), reverse=True)[:8]:
+                col_v="#34d399" if h.get("_p",0)>=0 else "#f87171"
+                st.markdown(f'<div class="hot-row"><span style="color:#f1f5f9;font-weight:600">{h["T"]}</span><span style="color:#94a3b8">{h["P"]}</span><span style="color:{col_v};font-weight:600">{h["Δ"]}</span><span style="color:#475569">{h["V×"]}</span></div>', unsafe_allow_html=True)
+        else:
+            st.caption("Sin datos disponibles.")
+
+    st.markdown("---")
+
+    # Configuracion compacta
+    st.markdown('<div class="config-card"><h3>⚙️ CONFIGURACIÓN</h3>', unsafe_allow_html=True)
+    periodo    = st.selectbox("Período", ["2y","1y","6mo"], index=0, label_visibility="collapsed")
+    rsi_umbral = st.slider("RSI sobreventa", 25, 45, 33)
+    dias_max   = st.slider("Señal activa máx. días", 1, 5, 3)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    if st.button("▶ EJECUTAR ESCÁNER", use_container_width=True, type="primary"):
+        st.session_state.listo=False
+        st.session_state.compras=[]
+        st.session_state.rsi=[]
+        st.session_state.radar=[]
+        st.session_state.seccion=None
+        st.session_state.ru=rsi_umbral
+        lista_c,lista_r,lista_rd=[],[],[]
+        prog=st.progress(0,text="Escaneando...")
+        for idx,ticker in enumerate(TICKERS_DEFAULT):
+            prog.progress(int((idx+1)/len(TICKERS_DEFAULT)*100), text=f"{ticker} ({idx+1}/{len(TICKERS_DEFAULT)})")
+            datos,_=analizar_ticker(ticker,periodo)
+            if datos is None: continue
+            es_c=0<datos["Días"]<=dias_max
+            if es_c:
+                ant="Día 1" if datos["Días"]==1 else f"{datos['Días']}d"
+                lista_c.append({"Ticker":datos["Ticker"],"Banda":datos["Banda"],"Días":ant,
+                    "Gatillos":datos["Gatillos"],"P.Ent":datos["P.Ent"],"Precio":datos["Precio"],
+                    "RSI":datos["RSI"],"ADX":datos["ADX"],"TP1":datos["TP1"],"%TP":datos["%TP"],"SL":datos["SL"]})
+            if datos["rsi_raw"]<rsi_umbral:
+                lista_r.append({"Ticker":datos["Ticker"],"Banda":datos["Banda"],"Precio":datos["Precio"],"RSI":datos["RSI"],"ADX":datos["ADX"]})
+            if datos["Radar_BTD"]:
+                lista_rd.append({"Ticker":datos["Ticker"],"Señal":"🟢BTD","Banda":datos["Banda"],"Precio":datos["Precio"],"RSI":datos["RSI"]})
+            elif datos["Radar_OJO"]:
+                lista_rd.append({"Ticker":datos["Ticker"],"Señal":"🟡OJO","Banda":datos["Banda"],"Precio":datos["Precio"],"RSI":datos["RSI"]})
+        prog.empty()
+        st.session_state.compras=lista_c
+        st.session_state.rsi=lista_r
+        st.session_state.radar=lista_rd
+        st.session_state.listo=True
+        st.rerun()
+
+    st.markdown('<p class="footer-cap">SG6 · KW-DNA · Solo fines educativos · No es asesoría financiera</p>', unsafe_allow_html=True)
+    st.stop()
+
+# ======================================================================
+# RESULTADOS
+# ======================================================================
+lc=st.session_state.compras; lr=st.session_state.rsi; lrd=st.session_state.radar
+ru=st.session_state.ru
+
+st.success(f"✅ Escáner completado — {len(TICKERS_DEFAULT)} tickers")
+
+# Botones contadores
+c1,c2,c3=st.columns(3)
+with c1:
+    if st.button(f"🚀\n{len(lc)}\nCompras",use_container_width=True):
+        st.session_state.seccion=None if st.session_state.seccion=="c" else "c"
+with c2:
+    if st.button(f"📉\n{len(lr)}\nRSI<{ru}",use_container_width=True):
+        st.session_state.seccion=None if st.session_state.seccion=="r" else "r"
+with c3:
+    if st.button(f"🎯\n{len(lrd)}\nRadar",use_container_width=True):
+        st.session_state.seccion=None if st.session_state.seccion=="rd" else "rd"
+
+# Volver
+if st.button("← Volver al inicio", use_container_width=False):
+    st.session_state.listo=False
+    st.session_state.seccion=None
+    st.rerun()
+
+st.markdown("---")
 
 def cb(v):
     if v=="BC":  return "background-color:#064e3b;color:#34d399;font-weight:600"
@@ -407,278 +452,34 @@ def cr(v):
         if r>65: return "color:#34d399;font-weight:600"
     except: pass
     return "color:#94a3b8"
-def cf(v):
-    s=str(v)
-    if "sup." in s: return "color:#34d399;font-weight:600"
-    try:
-        r=float(s.replace('%','').replace('+',''))
-        if r<=2: return "color:#34d399;font-weight:600"
-        if r<=5: return "color:#fbbf24;font-weight:600"
-    except: pass
-    return "color:#94a3b8"
-def cs(v):
-    try:
-        r=float(str(v).replace('%',''))
-        if r<1: return "color:#f87171;font-weight:600"
-        if r<2: return "color:#fbbf24;font-weight:600"
-    except: pass
-    return "color:#94a3b8"
 
-G1="""<div class="glosario"><b>Banda</b> — BC (baja volatilidad) · VOL (alta volatilidad) &nbsp;|&nbsp; <b>Antigüedad</b> — días desde la vela gatillo &nbsp;|&nbsp; <b>Gatillos</b> — señales que activaron la entrada · ⚡ = ADD sobre posición abierta &nbsp;|&nbsp; <b>P.Entrada</b> — precio de cierre de la vela gatillo (fijo) &nbsp;|&nbsp; <b>Precio</b> — precio actual &nbsp;|&nbsp; <b>RSI</b> — rojo &lt;33 · verde &gt;65 &nbsp;|&nbsp; <b>ADX</b> — fuerza de tendencia (&gt;25 relevante) &nbsp;|&nbsp; <b>TP1</b> — objetivo desde P.Entrada + ATR×mult &nbsp;|&nbsp; <b>Falta TP1</b> — distancia al objetivo · ✅ = ya superado &nbsp;|&nbsp; <b>SL −3%</b> — stop loss 3% bajo P.Entrada &nbsp;|&nbsp; <b>Dist. SL</b> — margen al stop · rojo = peligro &nbsp;|&nbsp; <b>GEX</b> — 🟢 favorable · 🟠 cerca techo · 🔴 techo activo · 🟡 piso gamma</div>"""
-G2="""<div class="glosario"><b>RSI</b> — Wilder: rojo &lt;33 sobreventa extrema &nbsp;|&nbsp; <b>J(V)</b> — KDJ: &lt;20 zona de posible giro alcista &nbsp;|&nbsp; <b>ADX</b> — fuerza de tendencia &nbsp;|&nbsp; <b>Put/Call Wall</b> — soporte y resistencia gamma 5 semanas &nbsp;|&nbsp; <b>GEX</b> — contexto gamma actual</div>"""
-G3="""<div class="glosario"><b>OJO 🟡</b> — alerta temprana: RSI &lt;35 + J(V) &lt;28 + precio cerca banda inferior Bollinger &nbsp;|&nbsp; <b>BTD 🟢</b> — Buy The Dip confirmado: ayer OJO + hoy J cruza + MACD gira &nbsp;|&nbsp; <b>BB_DN</b> — banda inferior Bollinger</div>"""
-
-# ======================================================================
-# SESSION STATE — persistir resultados entre clicks
-# ======================================================================
-if "escaner_listo"  not in st.session_state: st.session_state.escaner_listo  = False
-if "lista_compras"  not in st.session_state: st.session_state.lista_compras  = []
-if "lista_rsi"      not in st.session_state: st.session_state.lista_rsi      = []
-if "lista_radar"    not in st.session_state: st.session_state.lista_radar    = []
-if "lista_desc"     not in st.session_state: st.session_state.lista_desc     = []
-if "seccion"        not in st.session_state: st.session_state.seccion        = None
-if "rsi_umbral_run" not in st.session_state: st.session_state.rsi_umbral_run = 33
-
-# ======================================================================
-# SIDEBAR
-# ======================================================================
-with st.sidebar:
-    st.markdown("### ⚙️ Configuración")
-    st.markdown("---")
-    periodo    = st.selectbox("Período histórico",["2y","1y","6mo"],index=0)
-    rsi_umbral = st.slider("Umbral RSI sobreventa",25,45,33)
-    dias_max   = st.slider("Señal activa máx. días",1,5,3)
-    usar_gex   = st.toggle("Put/Call Wall GEX (próximas 5 semanas)",value=True)
-    st.markdown("---")
-    ejecutar = st.button("▶ Ejecutar escáner",use_container_width=True,type="primary")
-    st.markdown('<p style="color:#334155;font-size:11px;text-align:center;margin-top:8px;">SG6 · v20.0 · Solo fines educativos</p>',unsafe_allow_html=True)
-
-# ======================================================================
-# HEADER
-# ======================================================================
-st.markdown("""
-<div class="main-header">
-    <h1>📊 SG6 Screener · Santo Grial</h1>
-    <p>SISTEMA KW-DNA · BC/VOL ADAPTATIVO · 9 GATILLOS · ADD · PUT/CALL WALL · RSI WILDER</p>
-</div>
-""", unsafe_allow_html=True)
-
-# ======================================================================
-# PANTALLA INICIAL — solo si no hay escaner listo
-# ======================================================================
-# Pantalla inicial solo si no hay escaner listo Y no se está ejecutando
-if not st.session_state.escaner_listo and not ejecutar:
-    with st.spinner("Cargando datos de mercado..."):
-        indices, vix_val, btc_pct, noticias, hot = get_market_data()
-
-    # Índices
-    cols = st.columns(4)
-    for idx,(name,data) in enumerate(indices.items()):
-        with cols[idx]:
-            p   = data["price"]; pct = data["pct"]
-            sig = "+" if pct>=0 else ""
-            col_cls = "idx-up" if pct>=0 else "idx-down"
-            st.markdown(f"""
-            <div class="idx-card">
-                <div class="idx-name">{name}</div>
-                <div class="idx-price">{p:,.0f}</div>
-                <div class="{col_cls}">{sig}{pct:.2f}%</div>
-            </div>""", unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # VIX + BTC + contexto
-    c1,c2,c3 = st.columns(3)
-    with c1:
-        if vix_val < 18:   vcls,vtxt = "vix-ok","✅ Mercado tranquilo"
-        elif vix_val < 25: vcls,vtxt = "vix-warn","⚠️ Volatilidad moderada"
-        else:              vcls,vtxt = "vix-bad","🔴 Alta volatilidad"
-        st.markdown(f"""<div class="idx-card">
-            <div class="idx-name">VIX — ÍNDICE DE VOLATILIDAD</div>
-            <div class="idx-price">{vix_val:.1f}</div>
-            <div class="{vcls}">{vtxt}</div>
-        </div>""", unsafe_allow_html=True)
-    with c2:
-        bsig = "+" if btc_pct>=0 else ""
-        bcls = "idx-up" if btc_pct>=0 else "idx-down"
-        st.markdown(f"""<div class="idx-card">
-            <div class="idx-name">BTC — TERMÓMETRO DE RIESGO</div>
-            <div class="idx-price">{bsig}{btc_pct:.2f}%</div>
-            <div class="{bcls}">{"🟢 Apetito de riesgo" if btc_pct>=0 else "🔴 Modo defensivo"}</div>
-        </div>""", unsafe_allow_html=True)
-    with c3:
-        sp = indices.get("S&P 500",{}).get("pct",0)
-        if vix_val<18 and sp>0:   ctx,ccolor = "✅ Condiciones favorables para entradas","vix-ok"
-        elif vix_val>25 or sp<-1: ctx,ccolor = "⚠️ Operar con cautela — mercado defensivo","vix-warn"
-        else:                      ctx,ccolor = "⚪ Contexto mixto — seleccionar bien","idx-name"
-        st.markdown(f"""<div class="idx-card">
-            <div class="idx-name">CONTEXTO DE MERCADO</div>
-            <div style="height:8px"></div>
-            <div class="{ccolor}" style="font-size:14px;font-weight:600;line-height:1.4">{ctx}</div>
-        </div>""", unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # Noticias + Más activas
-    col_n, col_h = st.columns([3,2])
-    with col_n:
-        st.markdown("#### 📰 Noticias del mercado")
-        if noticias:
-            for n in noticias:
-                st.markdown(f"""<div class="news-item">
-                    <a href="{n['link']}" target="_blank">{n['title']}</a>
-                    <span>{n['source']}</span>
-                </div>""", unsafe_allow_html=True)
-        else:
-            st.caption("No se pudieron cargar noticias.")
-
-    with col_h:
-        st.markdown("#### 🔥 Más activas del día")
-        if hot:
-            hot_sorted = sorted(hot, key=lambda x: abs(x.get("_pct",0)), reverse=True)
-            for h in hot_sorted[:8]:
-                pct_v = h.get("_pct",0)
-                col_v = "#34d399" if pct_v>=0 else "#f87171"
-                st.markdown(f"""<div class="hot-row">
-                    <span style="color:#f1f5f9;font-weight:600">{h['Ticker']}</span>
-                    <span style="color:#94a3b8">{h['Precio']}</span>
-                    <span style="color:{col_v};font-weight:600">{h['% Día']}</span>
-                    <span style="color:#475569">{h['Vol ×']}</span>
-                </div>""", unsafe_allow_html=True)
-        else:
-            st.caption("No se pudieron cargar datos.")
-
-    st.markdown('<p class="footer-cap">SG6 Screener · Sistema KW-DNA · RSI Wilder · GEX 5 series · Solo con fines educativos · No es asesoría financiera</p>',unsafe_allow_html=True)
-    st.stop()
-
-# ======================================================================
-# EJECUCION DEL ESCANER
-# ======================================================================
-if ejecutar:
-    st.session_state.escaner_listo  = False
-    st.session_state.seccion        = None
-    st.session_state.lista_compras  = []
-    st.session_state.lista_rsi      = []
-    st.session_state.lista_radar    = []
-    st.session_state.lista_desc     = []
-    st.session_state.rsi_umbral_run = rsi_umbral
-
-    lista_compras,lista_rsi,lista_radar,lista_desc=[],[],[],[]
-    progreso=st.progress(0,text="Iniciando escáner...")
-    status_box=st.empty()
-
-    for idx,ticker in enumerate(TICKERS_DEFAULT):
-        pct=int((idx+1)/len(TICKERS_DEFAULT)*100)
-        progreso.progress(pct,text=f"Analizando {ticker}  ({idx+1}/{len(TICKERS_DEFAULT)})")
-
-        datos,motivo=analizar_ticker(ticker,periodo)
-        if datos is None:
-            lista_desc.append({"Ticker":ticker,"Motivo":motivo}); continue
-
-        gex=None
-        if usar_gex and not any(x in ticker for x in ['-USD','ETH','BTC','SOL']):
-            gex=calcular_gex(ticker,datos["precio_raw"])
-        pw=gex["Put Wall"]  if gex else "—"
-        cw=gex["Call Wall"] if gex else "—"
-        gx=gex["GEX"]       if gex else "—"
-        pc=gex["P/C"]       if gex else "—"
-
-        es_c=0<datos["Días"]<=dias_max; es_a=datos["Add_Senal"] is not None
-        if es_c or es_a:
-            ant="Día 1" if datos["Días"]==1 else f"Activa {datos['Días']}d" if datos["Días"]>0 else "ADD"
-            lista_compras.append({"Ticker":datos["Ticker"],"Banda":datos["Banda"],"Antigüedad":ant,
-                "Gatillos":datos["Gatillos"],"P.Entrada":datos["P.Entrada"],"Precio":datos["Precio"],
-                "RSI":datos["RSI"],"ADX":datos["ADX"],"TP1":datos["TP1"],"Falta TP1":datos["Falta TP1"],
-                "SL −3%":datos["SL −3%"],"Dist. SL":datos["Dist. SL"],
-                "Put Wall":pw,"Call Wall":cw,"GEX":gx,"P/C":pc,"_pf":datos["pf"],"_pd":datos["pd"]})
-
-        if datos["rsi_raw"]<rsi_umbral:
-            lista_rsi.append({"Ticker":datos["Ticker"],"Banda":datos["Banda"],"Precio":datos["Precio"],
-                "RSI":datos["RSI"],"J(V)":datos["J(V)"],"ADX":datos["ADX"],"Put Wall":pw,"Call Wall":cw,"GEX":gx,"P/C":pc})
-
-        if datos["Radar_BTD"]:
-            lista_radar.append({"Ticker":datos["Ticker"],"Señal":"🟢 BTD","Banda":datos["Banda"],"Precio":datos["Precio"],"RSI":datos["RSI"],"J(V)":datos["J(V)"],"BB_DN":datos["BB_DN"],"Put Wall":pw,"Call Wall":cw,"GEX":gx,"P/C":pc})
-        elif datos["Radar_OJO"]:
-            lista_radar.append({"Ticker":datos["Ticker"],"Señal":"🟡 OJO","Banda":datos["Banda"],"Precio":datos["Precio"],"RSI":datos["RSI"],"J(V)":datos["J(V)"],"BB_DN":datos["BB_DN"],"Put Wall":pw,"Call Wall":cw,"GEX":gx,"P/C":pc})
-
-    progreso.empty()
-    st.session_state.lista_compras  = lista_compras
-    st.session_state.lista_rsi      = lista_rsi
-    st.session_state.lista_radar    = lista_radar
-    st.session_state.lista_desc     = lista_desc
-    st.session_state.escaner_listo  = True
-    status_box.success(f"✅ Escáner completado — {len(TICKERS_DEFAULT)} tickers procesados")
-
-# ======================================================================
-# PANTALLA DE RESULTADOS — solo si hay datos
-# ======================================================================
-if not st.session_state.escaner_listo:
-    st.stop()
-
-lc  = st.session_state.lista_compras
-lr  = st.session_state.lista_rsi
-lrd = st.session_state.lista_radar
-ru  = st.session_state.rsi_umbral_run
-
-# Banner persistente — siempre visible aunque se haga click en botones
-st.success(f"✅ Escáner completado — {len(TICKERS_DEFAULT)} tickers procesados")
-
-# Botones-contadores
-c1,c2,c3 = st.columns(3)
-with c1:
-    if st.button(f"🚀 Compras + ADD\n\n{len(lc)}",use_container_width=True):
-        st.session_state.seccion = None if st.session_state.seccion=="compras" else "compras"
-with c2:
-    if st.button(f"📉 RSI < {ru}\n\n{len(lr)}",use_container_width=True):
-        st.session_state.seccion = None if st.session_state.seccion=="rsi" else "rsi"
-with c3:
-    if st.button(f"🎯 Radar OJO/BTD\n\n{len(lrd)}",use_container_width=True):
-        st.session_state.seccion = None if st.session_state.seccion=="radar" else "radar"
-
-st.markdown("---")
-
-if st.session_state.seccion == "compras":
-    st.markdown('<div class="seccion-header"><h4>🚀 Señales activas — compras frescas y ADD</h4><p>TP1 y SL calculados desde la vela gatillo · ⚡ = ADD sobre posición abierta</p></div>',unsafe_allow_html=True)
-    st.markdown(G1,unsafe_allow_html=True)
+sec=st.session_state.seccion
+if sec=="c":
+    st.markdown('<div class="seccion-header"><h4>🚀 Compras frescas</h4></div>',unsafe_allow_html=True)
     if lc:
-        df1=pd.DataFrame(lc)
-        df1['_o']=df1['Gatillos'].apply(lambda x:1 if '⚡' in str(x) and not any(g in str(x) for g in ['S_PULL','S_IMPU','S_BOLL','S_SUELO','S_MACD','S_EARLY','S_REBOTE','SOFT']) else 0)
-        df1=df1.sort_values('_o').drop(columns=['_o','_pf','_pd']).reset_index(drop=True)
+        df1=pd.DataFrame(lc).reset_index(drop=True)
         df1.index=range(1,len(df1)+1)
-        st.dataframe(df1.style.map(cb,subset=["Banda"]).map(cr,subset=["RSI"]).map(cf,subset=["Falta TP1"]).map(cs,subset=["Dist. SL"]),use_container_width=True)
-        dl_buttons(df1,"compras")
+        st.dataframe(df1.style.map(cb,subset=["Banda"]).map(cr,subset=["RSI"]),use_container_width=True)
+        st.download_button("⬇️ CSV",df1.to_csv(index=False).encode(),"compras.csv","text/csv")
     else:
-        st.info("Ninguna compra fresca ni ADD activo hoy.")
-
-elif st.session_state.seccion == "rsi":
-    st.markdown('<div class="seccion-header"><h4>📉 Activos en sobreventa</h4><p>RSI Wilder por debajo del umbral configurado</p></div>',unsafe_allow_html=True)
-    st.markdown(G2,unsafe_allow_html=True)
+        st.info("Sin señales activas hoy.")
+elif sec=="r":
+    st.markdown('<div class="seccion-header"><h4>📉 Sobreventa RSI</h4></div>',unsafe_allow_html=True)
     if lr:
         df2=pd.DataFrame(lr).sort_values("RSI").reset_index(drop=True)
         df2.index=range(1,len(df2)+1)
         st.dataframe(df2.style.map(cb,subset=["Banda"]).map(cr,subset=["RSI"]),use_container_width=True)
-        dl_buttons(df2,"sobreventa")
     else:
-        st.info("Ningún activo en sobreventa extrema hoy.")
-
-elif st.session_state.seccion == "radar":
-    st.markdown('<div class="seccion-header"><h4>🎯 Radar temprano — formación de suelo</h4><p>OJO: alerta · BTD: confirmación</p></div>',unsafe_allow_html=True)
-    st.markdown(G3,unsafe_allow_html=True)
+        st.info("Ningún activo en sobreventa.")
+elif sec=="rd":
+    st.markdown('<div class="seccion-header"><h4>🎯 Radar OJO/BTD</h4></div>',unsafe_allow_html=True)
     if lrd:
-        df3=pd.DataFrame(lrd)
-        df3["_o"]=df3["Señal"].apply(lambda x:0 if "BTD" in x else 1)
-        df3=df3.sort_values(["_o","RSI"]).drop(columns="_o").reset_index(drop=True)
+        df3=pd.DataFrame(lrd).reset_index(drop=True)
         df3.index=range(1,len(df3)+1)
         st.dataframe(df3.style.map(cb,subset=["Banda"]).map(cr,subset=["RSI"]),use_container_width=True)
-        dl_buttons(df3,"radar")
     else:
-        st.info("Sin alertas tempranas de formación de suelo.")
-
+        st.info("Sin alertas de suelo.")
 else:
-    st.markdown('<p style="color:#334155;font-size:13px;text-align:center;padding:24px 0;">Haz clic en uno de los contadores para ver los resultados</p>',unsafe_allow_html=True)
+    st.markdown('<p style="color:#334155;font-size:12px;text-align:center;padding:16px 0;">Toca un contador para ver los resultados</p>',unsafe_allow_html=True)
 
-if st.session_state.lista_desc:
-    with st.expander(f"⚠️ Tickers descartados ({len(st.session_state.lista_desc)})",expanded=False):
-        st.dataframe(pd.DataFrame(st.session_state.lista_desc),use_container_width=True,hide_index=True)
-
-st.markdown('<p class="footer-cap">SG6 Screener · Sistema KW-DNA · RSI Wilder · GEX 5 series · Solo con fines educativos · No es asesoría financiera</p>',unsafe_allow_html=True)
+st.markdown('<p class="footer-cap">SG6 · KW-DNA · Solo fines educativos</p>',unsafe_allow_html=True)
