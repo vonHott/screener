@@ -357,7 +357,7 @@ def analizar_ticker(ticker_name, periodo):
     add_vol=(dias_activa>0 and banda=="VOL" and df['PDI_A'].iloc[i]>df['MDI_A'].iloc[i] and df['ADX_A'].iloc[i]>32 and bool(df['ADX_A_ACCEL'].iloc[i]) and df['Close'].iloc[i]>df['High'].iloc[max(0,i-3):i].max() and df['Close'].iloc[i]>df['MA20'].iloc[i] and df['Volume'].iloc[i]>df['VOL_MA'].iloc[i]*1.4)
     add_s="ADD-BC" if add_bc else ("ADD-VOL" if add_vol else None)
 
-    gmap={"S_PULL":"S_PULL","S_IMPU":"S_IMPU","S_BOLL":"S_BOLL","S_SUELO":"S_SUELO","S_MACD_CROSS":"S_MACD_CROSS","S_EARLY":"S_EARLY","S_REBOTE_MA50":"S_R50","S_REBOTE_MA200":"S_R200","S_BOLL_SOFT":"S_BSOFT"}
+    gmap={"S_PULL":"S_PULL","S_IMPU":"S_IMPU","S_BOLL":"S_BOLL","S_SUELO":"S_SUELO","S_MACD_CROSS":"S_MACD_CROSS","S_EARLY":"S_EARLY","S_CONT":"S_CONT","S_REBOTE_MA200":"S_R200","S_BOLL_SOFT":"S_BSOFT"}
     gatillos=[]
     if dias_activa>0:
         for nombre,col in gmap.items():
