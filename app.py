@@ -211,7 +211,8 @@ def analizar_ticker(ticker_name, periodo):
     df['RET_V']=df['Close'].pct_change()*100
     df['BETA_RAW']=df['RET_V'].rolling(60).std(ddof=0)
     df['BETA_S']=df['BETA_RAW'].rolling(20).mean()
-    df['BANDA']=np.where(df['BETA_S']<1.4,"BC","VOL")
+    df['BANDA_PRE']=np.where(df['BETA_S']<1.0,"BC",np.where(df['BETA_S']<1.8,"HYB","VOL"))
+    df['BANDA']=df['BANDA_PRE']
     df['MA20']=df['Close'].ewm(span=20,adjust=False).mean()
     df['MA50']=df['Close'].ewm(span=50,adjust=False).mean()
     df['MA200']=df['Close'].ewm(span=200,adjust=False).mean()
@@ -265,10 +266,13 @@ def analizar_ticker(ticker_name, periodo):
     df['S_CONT']=(df['Close']>df['High'].shift(1).rolling(10).max())&(df['Close']>df['MA50'])&df['MA50_SUBE']&df['GIRO_J']
     df['S_R200']=(df['Low']<=df['MA200']*1.01)&(df['Close']>df['MA200'])&(df['Close']>df['Low'].shift(1))&df['GIRO_J']&df['MA20_UP']&df['MA200_PLANA']&(df['Volume']>df['VOL_MA']*1.02)
     df['S_BSOFT']=(df['Low'].shift(1)<=df['BB_DN'])&(df['Close']>df['BB_DN'])&(df['Close']>df['Low'].shift(1))&df['GIRO_J']&(df['Volume']>df['VOL_MA']*0.88)&~df['MACD_GIRO_NEG']
-    is_bc=df['BANDA']=="BC"; is_vol=df['BANDA']=="VOL"
-    sbc=df['S_PULL']|df['S_IMPU']|df['S_BOLL']|df['S_SUELO']|df['S_MACD_CROSS']|df['S_EARLY']|df['S_CONT']|df['S_R200']|df['S_BSOFT']
-    svol=df['S_IMPU']|df['S_BOLL']|df['S_SUELO']|df['S_MACD_CROSS']|df['S_CONT']|df['S_R200']|df['S_BSOFT']
-    df['B_RAW']=(is_bc&sbc)|(is_vol&svol)
+    is_bc =df['BANDA']=="BC"
+    is_hyb=df['BANDA']=="HYB"
+    is_vol=df['BANDA']=="VOL"
+    sbc  =df['S_PULL']|df['S_IMPU']|df['S_BOLL']|df['S_SUELO']|df['S_MACD_CROSS']|df['S_EARLY']|df['S_CONT']|df['S_R200']|df['S_BSOFT']
+    shyb =df['S_PULL']|df['S_IMPU']|df['S_BOLL']|df['S_SUELO']|df['S_MACD_CROSS']|df['S_EARLY']|df['S_CONT']|df['S_R200']|df['S_BSOFT']
+    svol =df['S_IMPU']|df['S_BOLL']|df['S_SUELO']|df['S_MACD_CROSS']|df['S_CONT']|df['S_R200']|df['S_BSOFT']
+    df['B_RAW']=(is_bc&sbc)|(is_hyb&shyb)|(is_vol&svol)
     b_raw_arr=df['B_RAW'].values
     dias_activa=0
     for k in range(len(b_raw_arr)-1,max(len(b_raw_arr)-6,-1),-1):
@@ -443,6 +447,7 @@ st.markdown("---")
 
 def cb(v):
     if v=="BC":  return "background-color:#064e3b;color:#34d399;font-weight:600"
+    if v=="HYB": return "background-color:#1e3a5f;color:#38bdf8;font-weight:600"
     if v=="VOL": return "background-color:#451a03;color:#fb923c;font-weight:600"
     return ""
 def cr(v):
