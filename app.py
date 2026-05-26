@@ -620,6 +620,9 @@ lr  = st.session_state.lista_rsi
 lrd = st.session_state.lista_radar
 ru  = st.session_state.rsi_umbral_run
 
+# Banner persistente — siempre visible aunque se haga click en botones
+st.success(f"✅ Escáner completado — {len(TICKERS_DEFAULT)} tickers procesados")
+
 # Botones-contadores
 c1,c2,c3 = st.columns(3)
 with c1:
