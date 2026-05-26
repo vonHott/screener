@@ -188,28 +188,53 @@ def calcular_gex(ticker_name, precio_actual):
     try:
         tk = yf.Ticker(ticker_name); exps = tk.options
         if not exps: return None
-        puts_all,calls_all=[],[]
+        puts_all, calls_all = [], []
+        total_put_vol, total_call_vol = 0, 0
+        total_put_oi,  total_call_oi  = 0, 0
         for exp in exps[:5]:
             try:
-                c=tk.option_chain(exp)
+                c = tk.option_chain(exp)
                 puts_all.append(c.puts[['strike','openInterest']].copy())
                 calls_all.append(c.calls[['strike','openInterest']].copy())
+                # Sumar volumen y OI para PCR real
+                pv = c.puts['volume'].fillna(0).sum()
+                cv = c.calls['volume'].fillna(0).sum()
+                po = c.puts['openInterest'].fillna(0).sum()
+                co = c.calls['openInterest'].fillna(0).sum()
+                total_put_vol  += pv
+                total_call_vol += cv
+                total_put_oi   += po
+                total_call_oi  += co
             except Exception: continue
         if not puts_all or not calls_all: return None
-        pd_=pd.concat(puts_all).groupby('strike')['openInterest'].sum().reset_index()
-        cd_=pd.concat(calls_all).groupby('strike')['openInterest'].sum().reset_index()
-        rlo,rhi=precio_actual*0.70,precio_actual*1.30
-        pd_=pd_[(pd_['strike']>=rlo)&(pd_['strike']<=rhi)]
-        cd_=cd_[(cd_['strike']>=rlo)&(cd_['strike']<=rhi)]
+        pd_ = pd.concat(puts_all).groupby('strike')['openInterest'].sum().reset_index()
+        cd_ = pd.concat(calls_all).groupby('strike')['openInterest'].sum().reset_index()
+        rlo, rhi = precio_actual*0.70, precio_actual*1.30
+        pd_ = pd_[(pd_['strike']>=rlo)&(pd_['strike']<=rhi)]
+        cd_ = cd_[(cd_['strike']>=rlo)&(cd_['strike']<=rhi)]
         if pd_.empty or cd_.empty: return None
-        pw=float(pd_.loc[pd_['openInterest'].idxmax(),'strike'])
-        cw=float(cd_.loc[cd_['openInterest'].idxmax(),'strike'])
-        if precio_actual>cw: e,c="🔴","Techo gamma"
-        elif precio_actual<pw: e,c="🟡","Piso gamma"
+        pw = float(pd_.loc[pd_['openInterest'].idxmax(),'strike'])
+        cw = float(cd_.loc[cd_['openInterest'].idxmax(),'strike'])
+        if precio_actual > cw:   e, ctx = "🔴", "Techo gamma"
+        elif precio_actual < pw: e, ctx = "🟡", "Piso gamma"
         else:
-            d1,d2=precio_actual-pw,cw-precio_actual
-            e,c=("🟠","Cerca techo") if d2<d1*0.4 else ("🟢","Zona favorable")
-        return {"Put Wall":f"${pw:.2f}","Call Wall":f"${cw:.2f}","GEX":f"{e} {c}"}
+            d1, d2 = precio_actual-pw, cw-precio_actual
+            e, ctx = ("🟠","Cerca techo") if d2<d1*0.4 else ("🟢","Zona favorable")
+        # PCR por volumen (preferido) — fallback a OI si volumen es 0
+        if total_call_vol > 0:
+            pcr = round(total_put_vol / total_call_vol, 2)
+            pcr_tipo = "Vol"
+        elif total_call_oi > 0:
+            pcr = round(total_put_oi / total_call_oi, 2)
+            pcr_tipo = "OI"
+        else:
+            pcr, pcr_tipo = 0, "—"
+        if   pcr == 0:    pcr_label = "—"
+        elif pcr < 0.7:   pcr_label = "🟢 Alcista"
+        elif pcr > 1.0:   pcr_label = "🔴 Bajista"
+        else:             pcr_label = "⚪ Neutral"
+        pcr_str = f"{pcr:.2f} {pcr_label}" if pcr > 0 else "—"
+        return {"Put Wall":f"${pw:.2f}","Call Wall":f"${cw:.2f}","GEX":f"{e} {ctx}","P/C":pcr_str}
     except Exception: return None
 
 def analizar_ticker(ticker_name, periodo):
@@ -271,20 +296,35 @@ def analizar_ticker(ticker_name, periodo):
     df['BB_DN']=df['BB_MID']-2*df['BB_STD']
     df['VOL_MA']=df['Volume'].rolling(20).mean()
 
-    df['S_PULL']=(df['Low']<df['MA50']*1.015)&(df['Close']>df['MA50']*0.985)&df['GIRO_J']&(df['Volume']>df['VOL_MA']*1.05)&df['FILTRO_BASE']
-    df['S_IMPU']=(df['Close']>df['High'].shift(1).rolling(5).max())&(df['ADX_V']>df['ADX_REQ'])&df['MA20_UP']&df['GIRO_J']&(df['Volume']>df['VOL_MA']*1.05)
-    df['S_BOLL']=(df['Low'].shift(1)<=df['BB_DN'])&(df['Close']>df['BB_DN'])&df['GIRO_J']&df['GIRO_MACD']&(df['Volume']>df['VOL_MA']*1.05)&df['FILTRO_BASE']
-    df['S_SUELO']=(df['OSC']<32)&(df['J_V']<22)&(df['Low'].shift(1)<=df['BB_DN'])&(df['Close']>df['BB_DN'])&(df['Close']>df['Low'].shift(1))&df['GIRO_MACD']&(df['Volume']>df['VOL_MA']*0.9)
+    # FILTROS CONTEXTO MA50/MA200 — evita comprar en medias cayendo (CRH v3)
+    df['MA50_ALCISTA']    = df['MA50'] > df['MA50'].shift(5)
+    df['VENIA_MA50']      = df['Close'].shift(1).gt(df['MA50']).rolling(3).sum() >= 2
+    df['MA200_PLANA']     = df['MA200'] >= df['MA200'].shift(3)
+    df['MA50_SUBE']       = df['MA50'] > df['MA50'].shift(3)
+
+    # S_PULL mejorado: solo pullbacks en tendencia alcista real
+    df['S_PULL']=(df['Low']<df['MA50']*1.015)&(df['Close']>df['MA50']*0.985)&df['GIRO_J']&(df['Volume']>df['VOL_MA']*1.02)&df['MA50_ALCISTA']&df['VENIA_MA50']&(df['ADX_V']>18)
+    # S_IMPU: ruptura con fuerza
+    df['S_IMPU']=(df['Close']>df['High'].shift(1).rolling(5).max())&(df['ADX_V']>df['ADX_REQ'])&df['MA20_UP']&df['GIRO_J']&(df['Volume']>df['VOL_MA']*1.02)
+    # S_BOLL: rebote banda inferior
+    df['S_BOLL']=(df['Low'].shift(1)<=df['BB_DN'])&(df['Close']>df['BB_DN'])&df['GIRO_J']&df['GIRO_MACD']&(df['Volume']>df['VOL_MA']*0.88)
+    # S_SUELO: sobreventa extrema
+    df['S_SUELO']=(df['OSC']<35)&(df['J_V']<25)&(df['Close']>df['Low'].shift(1))&df['GIRO_MACD']&(df['Volume']>df['VOL_MA']*0.88)
     df['CX_MACD']=(df['DIF']>df['DEA'])&(df['DIF'].shift(1)<=df['DEA'].shift(1))
-    df['S_MACD_CROSS']=df['CX_MACD']&(df['DIF']<0)&(df['HISTO']>df['HISTO'].shift(1))&(df['Close']>df['MA20'])&df['MA20_UP']&(df['Volume']>df['VOL_MA']*1.05)&df['FILTRO_BASE']
-    df['S_EARLY']=(df['OSC']<38)&(df['J_V']<30)&df['CROSS_KD']&(df['Close']>df['Close'].shift(1))&df['MA20_UP']&(df['Volume']>df['VOL_MA']*0.9)&df['FILTRO_BASE']
-    df['S_R50']=(df['Low']<=df['MA50']*1.008)&(df['Close']>df['MA50'])&(df['Close']>df['BB_DN'])&(df['Close']<df['BB_MID'])&df['GIRO_J']&df['MA20_UP']&df['F_ALCISTA']&(df['Volume']>df['VOL_MA']*0.95)
-    df['S_R200']=(df['Low']<=df['MA200']*1.01)&(df['Close']>df['MA200'])&(df['Close']>df['Low'].shift(1))&df['GIRO_J']&df['MA20_UP']&(df['Volume']>df['VOL_MA']*0.95)
-    df['S_BSOFT']=(df['Low'].shift(1)<=df['BB_DN'])&(df['Close']>df['BB_DN'])&(df['Close']>df['Low'].shift(1))&df['GIRO_J']&(df['Volume']>df['VOL_MA']*0.9)&df['FILTRO_BASE']&~df['MACD_GIRO_NEG']
+    # S_MACD_CROSS: cruce MACD
+    df['S_MACD_CROSS']=df['CX_MACD']&(df['HISTO']>df['HISTO'].shift(1))&df['MA20_UP']&(df['Volume']>df['VOL_MA']*1.02)
+    # S_EARLY: cruce KD anticipado
+    df['S_EARLY']=(df['OSC']<40)&(df['J_V']<30)&df['CROSS_KD']&df['MA20_UP']&(df['Volume']>df['VOL_MA']*0.88)
+    # S_CONT: continuacion de tendencia (nuevo de CRH)
+    df['S_CONT']=(df['Close']>df['High'].shift(1).rolling(10).max())&(df['Close']>df['MA50'])&df['MA50_SUBE']&df['GIRO_J']
+    # S_R200 mejorado: solo cuando MA200 es soporte real
+    df['S_R200']=(df['Low']<=df['MA200']*1.01)&(df['Close']>df['MA200'])&(df['Close']>df['Low'].shift(1))&df['GIRO_J']&df['MA20_UP']&df['MA200_PLANA']&(df['Volume']>df['VOL_MA']*1.02)
+    # S_BSOFT: rebote BB sin MACD negativo
+    df['S_BSOFT']=(df['Low'].shift(1)<=df['BB_DN'])&(df['Close']>df['BB_DN'])&(df['Close']>df['Low'].shift(1))&df['GIRO_J']&(df['Volume']>df['VOL_MA']*0.88)&~df['MACD_GIRO_NEG']
 
     is_bc=df['BANDA']=="BC"; is_vol=df['BANDA']=="VOL"
-    sbc=df['S_PULL']|df['S_IMPU']|df['S_BOLL']|df['S_SUELO']|df['S_MACD_CROSS']|df['S_EARLY']|df['S_R50']|df['S_R200']|df['S_BSOFT']
-    svol=df['S_IMPU']|df['S_BOLL']|df['S_SUELO']|df['S_MACD_CROSS']|df['S_EARLY']|df['S_R200']|df['S_BSOFT']
+    sbc=df['S_PULL']|df['S_IMPU']|df['S_BOLL']|df['S_SUELO']|df['S_MACD_CROSS']|df['S_EARLY']|df['S_CONT']|df['S_R200']|df['S_BSOFT']
+    svol=df['S_IMPU']|df['S_BOLL']|df['S_SUELO']|df['S_MACD_CROSS']|df['S_CONT']|df['S_R200']|df['S_BSOFT']
     df['B_RAW']=(is_bc&sbc)|(is_vol&svol)
 
     b_raw_arr=df['B_RAW'].values
@@ -541,6 +581,7 @@ if ejecutar:
         pw=gex["Put Wall"]  if gex else "—"
         cw=gex["Call Wall"] if gex else "—"
         gx=gex["GEX"]       if gex else "—"
+        pc=gex["P/C"]       if gex else "—"
 
         es_c=0<datos["Días"]<=dias_max; es_a=datos["Add_Senal"] is not None
         if es_c or es_a:
@@ -549,16 +590,16 @@ if ejecutar:
                 "Gatillos":datos["Gatillos"],"P.Entrada":datos["P.Entrada"],"Precio":datos["Precio"],
                 "RSI":datos["RSI"],"ADX":datos["ADX"],"TP1":datos["TP1"],"Falta TP1":datos["Falta TP1"],
                 "SL −3%":datos["SL −3%"],"Dist. SL":datos["Dist. SL"],
-                "Put Wall":pw,"Call Wall":cw,"GEX":gx,"_pf":datos["pf"],"_pd":datos["pd"]})
+                "Put Wall":pw,"Call Wall":cw,"GEX":gx,"P/C":pc,"_pf":datos["pf"],"_pd":datos["pd"]})
 
         if datos["rsi_raw"]<rsi_umbral:
             lista_rsi.append({"Ticker":datos["Ticker"],"Banda":datos["Banda"],"Precio":datos["Precio"],
-                "RSI":datos["RSI"],"J(V)":datos["J(V)"],"ADX":datos["ADX"],"Put Wall":pw,"Call Wall":cw,"GEX":gx})
+                "RSI":datos["RSI"],"J(V)":datos["J(V)"],"ADX":datos["ADX"],"Put Wall":pw,"Call Wall":cw,"GEX":gx,"P/C":pc})
 
         if datos["Radar_BTD"]:
-            lista_radar.append({"Ticker":datos["Ticker"],"Señal":"🟢 BTD","Banda":datos["Banda"],"Precio":datos["Precio"],"RSI":datos["RSI"],"J(V)":datos["J(V)"],"BB_DN":datos["BB_DN"],"Put Wall":pw,"Call Wall":cw,"GEX":gx})
+            lista_radar.append({"Ticker":datos["Ticker"],"Señal":"🟢 BTD","Banda":datos["Banda"],"Precio":datos["Precio"],"RSI":datos["RSI"],"J(V)":datos["J(V)"],"BB_DN":datos["BB_DN"],"Put Wall":pw,"Call Wall":cw,"GEX":gx,"P/C":pc})
         elif datos["Radar_OJO"]:
-            lista_radar.append({"Ticker":datos["Ticker"],"Señal":"🟡 OJO","Banda":datos["Banda"],"Precio":datos["Precio"],"RSI":datos["RSI"],"J(V)":datos["J(V)"],"BB_DN":datos["BB_DN"],"Put Wall":pw,"Call Wall":cw,"GEX":gx})
+            lista_radar.append({"Ticker":datos["Ticker"],"Señal":"🟡 OJO","Banda":datos["Banda"],"Precio":datos["Precio"],"RSI":datos["RSI"],"J(V)":datos["J(V)"],"BB_DN":datos["BB_DN"],"Put Wall":pw,"Call Wall":cw,"GEX":gx,"P/C":pc})
 
     progreso.empty()
     st.session_state.lista_compras  = lista_compras
