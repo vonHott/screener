@@ -248,9 +248,55 @@ def analizar_ticker(sym, periodo):
     df['S_R200']  = (df['Low']<=df['MA200']*1.01)&(df['Close']>df['MA200'])&(df['Close']>df['Low'].shift(1))&df['GIRO_J']&df['MA20_UP']&df['MA200_PLANA']&(df['Volume']>df['VOL_MA']*1.02)
     df['S_BSOFT'] = (df['Low'].shift(1)<=df['BB_DN'])&(df['Close']>df['BB_DN'])&(df['Close']>df['Low'].shift(1))&df['GIRO_J']&(df['Volume']>df['VOL_MA']*0.88)&~df['MACD_GIRO_NEG']
 
+    # ── VMC CIPHER B — WaveTrend Oscillator (LazyBear / VuManChu, MPL 2.0) ──
+    # Parametros originales del indicador
+    vmc_n1 = 10   # channel length
+    vmc_n2 = 21   # average length
+    ob1    = 60   # overbought 1
+    os1    = -60  # oversold 1
+    ob2    = 53
+    os2    = -53
+
+    # HLC3
+    hlc3 = (df['High'] + df['Low'] + df['Close']) / 3
+
+    # EMA del HLC3
+    esa  = hlc3.ewm(span=vmc_n1, adjust=False).mean()
+
+    # Diferencia absoluta suavizada
+    de   = (hlc3 - esa).abs().ewm(span=vmc_n1, adjust=False).mean()
+
+    # Commodity Channel Index adaptado
+    ci   = (hlc3 - esa) / (0.015 * de.replace(0, 1e-8))
+
+    # WaveTrend 1 y 2
+    wt1  = ci.ewm(span=vmc_n2, adjust=False).mean()
+    wt2  = wt1.rolling(4).mean()
+    df['VMC_WT1'] = wt1
+    df['VMC_WT2'] = wt2
+
+    # Money Flow Index RSI modificado (componente MFI del VMC)
+    mfi_period = 60
+    mfi_mult   = 150
+    mfi_raw    = ((df['Close'] - df['Open']) / (df['High'] - df['Low']).replace(0, 1e-8)) * mfi_mult
+    df['VMC_MFI'] = mfi_raw.rolling(mfi_period).mean()
+
+    # SEÑAL VMC — Circulo verde (buy dot):
+    # WT2 cruza hacia arriba WT1 desde zona de sobreventa
+    wt_cross_up = (wt2 > wt1) & (wt2.shift(1) <= wt1.shift(1))
+    wt_oversold  = wt2.shift(1) < os2  # venia de sobreventa
+    mfi_positive = df['VMC_MFI'] > 0   # money flow positivo
+    df['VMC_BUY'] = wt_cross_up & wt_oversold & mfi_positive
+
+    # Divergencia alcista VMC:
+    # Precio hace minimo mas bajo pero WT2 hace minimo mas alto
+    price_lower_low = df['Close'] < df['Close'].rolling(5).min().shift(1)
+    wt2_higher_low  = wt2 > wt2.rolling(5).min().shift(1)
+    df['VMC_DIV']   = price_lower_low & wt2_higher_low & (wt2 < os2)
+
     # B_RAW: cualquier gatillo de rebote, sin distincion de banda
     # (los rebotes aplican igual para BC, HYB y VOL)
-    df['B_RAW']    = df['S_PULL']|df['S_BOLL']|df['S_SUELO']|df['S_EARLY']|df['S_R200']|df['S_BSOFT']
+    df['B_RAW'] = df['S_PULL']|df['S_BOLL']|df['S_SUELO']|df['S_EARLY']|df['S_R200']|df['S_BSOFT']|df['VMC_BUY']|df['VMC_DIV']
 
     # B_SIGNAL: primera barra de la racha — identico a Moomoo
     df['B_SIGNAL'] = df['B_RAW'] & ~df['B_RAW'].shift(1).fillna(False)
@@ -281,7 +327,8 @@ def analizar_ticker(sym, periodo):
 
     # Gatillos disparados hoy
     gmap = {"PULL":"S_PULL","BOLL":"S_BOLL","SUELO":"S_SUELO",
-            "EARLY":"S_EARLY","R200":"S_R200","BSOFT":"S_BSOFT"}
+            "EARLY":"S_EARLY","R200":"S_R200","BSOFT":"S_BSOFT",
+            "VMC_BUY":"VMC_BUY","VMC_DIV":"VMC_DIV"}
     gatillos = [n for n,c in gmap.items() if bool(df[c].iloc[-1])]
 
     # Radar OJO/BTD
