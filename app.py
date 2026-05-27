@@ -391,26 +391,15 @@ def analizar_ticker(ticker_name, periodo):
     svol=df['S_IMPU']|df['S_BOLL']|df['S_SUELO']|df['S_MACD_CROSS']|df['S_CONT']|df['S_R200']|df['S_BSOFT']
     df['B_RAW']=(is_bc&sbc)|(is_hyb&shyb)|(is_vol&svol)
     df['B_SIGNAL'] = df['B_RAW'] & ~df['B_RAW'].shift(1).fillna(False)
-    dias_activa = 0
+
+    # Solo detectar señal de HOY (ultima barra del dia)
+    # App se ejecuta al cierre — solo importa si hoy hay señal nueva
+    es_compra_hoy = bool(df['B_SIGNAL'].iloc[-1])
+    dias_activa   = 1 if es_compra_hoy else 0
     e_price, atr_entry = None, None
-    n = len(df)
-    if df['B_RAW'].iloc[-5:].any():
-        idx_inicio = n - 1
-        gaps = 0
-        for k in range(n-1, max(n-60,-1), -1):
-            if df['B_RAW'].iloc[k]:
-                idx_inicio = k; gaps = 0
-            else:
-                gaps += 1
-                if gaps >= 2: break
-        idx_entrada = idx_inicio
-        for k in range(idx_inicio, min(idx_inicio+10, n)):
-            if df['B_SIGNAL'].iloc[k]:
-                idx_entrada = k; break
-        dias_activa = n - 1 - idx_entrada
-        if idx_entrada < n:
-            e_price   = float(df['Close'].iloc[idx_entrada])
-            atr_entry = float(df['ATR_V'].iloc[idx_entrada])
+    if es_compra_hoy:
+        e_price   = float(df['Close'].iloc[-1])
+        atr_entry = float(df['ATR_V'].iloc[-1])
     precio=float(df['Close'].iloc[-1]); banda=df['BANDA'].iloc[-1]
     tp_mult=1.6 if banda=="BC" else (2.0 if banda=="HYB" else 2.5)
     if e_price and atr_entry:
@@ -444,7 +433,7 @@ def analizar_ticker(ticker_name, periodo):
 # ======================================================================
 # SESSION STATE
 # ======================================================================
-for k,v in [("listo",False),("compras",[]),("rsi",[]),("radar",[]),("seccion",None),("ru",33),("periodo","2y"),("dias_max",3)]:
+for k,v in [("listo",False),("compras",[]),("rsi",[]),("radar",[]),("seccion",None),("ru",33),("periodo","2y")]:
     if k not in st.session_state: st.session_state[k]=v
 
 # ======================================================================
@@ -578,10 +567,9 @@ if not st.session_state.listo:
             prog.progress(int((idx+1)/len(TICKERS_DEFAULT)*100), text=f"Analizando {ticker}  ({idx+1}/{len(TICKERS_DEFAULT)})")
             datos,_=analizar_ticker(ticker,periodo)
             if datos is None: continue
-            if 0<datos["Días"]<=dias_max:
+            if datos["Días"]==1:
                 ant="Día 1" if datos["Días"]==1 else f"Activa {datos['Días']}d"
-                lista_c.append({"Ticker":datos["Ticker"],"Banda":datos["Banda"],"Antigüedad":ant,
-                    "Gatillos":datos["Gatillos"],"P.Ent":datos["P.Ent"],"Precio":datos["Precio"],
+                lista_c.append({"Ticker":datos["Ticker"],"Banda":datos["Banda"],                    "Gatillos":datos["Gatillos"],"P.Ent":datos["P.Ent"],"Precio":datos["Precio"],
                     "RSI":datos["RSI"],"ADX":datos["ADX"],"TP1":datos["TP1"],"%TP":datos["%TP"],"SL":datos["SL"]})
             if datos["rsi_raw"]<rsi_umbral:
                 lista_r.append({"Ticker":datos["Ticker"],"Banda":datos["Banda"],"Precio":datos["Precio"],"RSI":datos["RSI"],"ADX":datos["ADX"]})
