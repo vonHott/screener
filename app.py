@@ -553,14 +553,14 @@ if not st.session_state.listo:
     with col2:
         rsi_umbral = st.slider("RSI sobreventa", 25, 45, 33)
     with col3:
-        dias_max = st.slider("Señal activa máx. días", 1, 5, 3)
+        st.empty()
     st.markdown('</div>', unsafe_allow_html=True)
 
     if st.button("▶  EJECUTAR ESCÁNER", use_container_width=True, type="primary"):
         st.session_state.listo=False
         st.session_state.compras=[]; st.session_state.rsi=[]; st.session_state.radar=[]
         st.session_state.seccion=None; st.session_state.ru=rsi_umbral
-        st.session_state.periodo=periodo; st.session_state.dias_max=dias_max
+        st.session_state.periodo=periodo
         lista_c,lista_r,lista_rd=[],[],[]
         prog=st.progress(0,text="Iniciando escáner...")
         for idx,ticker in enumerate(TICKERS_DEFAULT):
