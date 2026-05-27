@@ -229,53 +229,43 @@ def analizar_ticker(sym, periodo):
     df['MA200_PLANA']= df['MA200'] >= df['MA200'].shift(3)
 
     # ── Gatillos CRH v3 — identicos al script Moomoo ──
+    # ── GATILLOS DE REBOTE DESDE ABAJO (screener de entrada nueva) ──
+    # Solo gatillos que implican inicio desde sobreventa o soporte:
+    # S_BOLL  : rebote desde banda Bollinger inferior
+    # S_SUELO : RSI<35 + J<25 — sobreventa extrema
+    # S_EARLY : RSI<40 + cruce KD — anticipado en zona baja
+    # S_R200  : rebote desde MA200 con soporte real
+    # S_BSOFT : rebote suave desde BB inferior sin MACD negativo
+    # S_PULL  : pullback a MA50 en tendencia alcista
+    # Excluidos: S_IMPU, S_CONT, S_MACD — son continuacion, no inicio
+
+    cx_macd = (dif>dea)&(dif.shift(1)<=dea.shift(1))
+
     df['S_PULL']  = (df['Low']<df['MA50']*1.015)&(df['Close']>df['MA50']*0.985)&df['GIRO_J']&(df['Volume']>df['VOL_MA']*1.02)&df['MA50_ALC']&df['VENIA_MA50']
-    df['S_IMPU']  = (df['Close']>df['High'].shift(1).rolling(5).max())&(df['ADX']>df['ADX_REQ'])&df['MA20_UP']&df['GIRO_J']&(df['Volume']>df['VOL_MA']*1.02)
     df['S_BOLL']  = (df['Low'].shift(1)<=df['BB_DN'])&(df['Close']>df['BB_DN'])&df['GIRO_J']&df['GIRO_MACD']&(df['Volume']>df['VOL_MA']*0.88)
     df['S_SUELO'] = (df['RSI']<35)&(df['J']<25)&(df['Close']>df['Low'].shift(1))&df['GIRO_MACD']&(df['Volume']>df['VOL_MA']*0.88)
-    cx_macd       = (dif>dea)&(dif.shift(1)<=dea.shift(1))
-    df['S_MACD']  = cx_macd&(hist>hist.shift(1))&df['MA20_UP']&(df['Volume']>df['VOL_MA']*1.02)
     df['S_EARLY'] = (df['RSI']<40)&(df['J']<30)&df['CROSS_KD']&df['MA20_UP']&(df['Volume']>df['VOL_MA']*0.88)
-    df['S_CONT']  = (df['Close']>df['High'].shift(1).rolling(10).max())&(df['Close']>df['MA50'])&df['MA50_SUBE']&df['GIRO_J']
     df['S_R200']  = (df['Low']<=df['MA200']*1.01)&(df['Close']>df['MA200'])&(df['Close']>df['Low'].shift(1))&df['GIRO_J']&df['MA20_UP']&df['MA200_PLANA']&(df['Volume']>df['VOL_MA']*1.02)
     df['S_BSOFT'] = (df['Low'].shift(1)<=df['BB_DN'])&(df['Close']>df['BB_DN'])&(df['Close']>df['Low'].shift(1))&df['GIRO_J']&(df['Volume']>df['VOL_MA']*0.88)&~df['MACD_GIRO_NEG']
 
-    # ── B_RAW y B_SIGNAL — exacto al CRH v3 ──
-    sbc  = df['S_PULL']|df['S_IMPU']|df['S_BOLL']|df['S_SUELO']|df['S_MACD']|df['S_EARLY']|df['S_CONT']|df['S_R200']|df['S_BSOFT']
-    shyb = sbc.copy()
-    svol = df['S_IMPU']|df['S_BOLL']|df['S_SUELO']|df['S_MACD']|df['S_CONT']|df['S_R200']|df['S_BSOFT']
+    # B_RAW: cualquier gatillo de rebote, sin distincion de banda
+    # (los rebotes aplican igual para BC, HYB y VOL)
+    df['B_RAW']    = df['S_PULL']|df['S_BOLL']|df['S_SUELO']|df['S_EARLY']|df['S_R200']|df['S_BSOFT']
 
-    is_bc  = df['BANDA']=="BC"
-    is_hyb = df['BANDA']=="HYB"
-    is_vol = df['BANDA']=="VOL"
-
-    df['B_RAW']    = (is_bc&sbc)|(is_hyb&shyb)|(is_vol&svol)
-    # B_SIGNAL: transicion False→True — identico a Moomoo B_RAW AND (REF(B_RAW,1)=0)
+    # B_SIGNAL: primera barra de la racha — identico a Moomoo
     df['B_SIGNAL'] = df['B_RAW'] & ~df['B_RAW'].shift(1).fillna(False)
 
-    # ── SEÑAL DE HOY: solo si B_SIGNAL es True en la ultima barra ──
+    # Solo entradas de HOY
     if not df['B_SIGNAL'].iloc[-1]:
         return None
 
-    # ── FILTRO ANTI-CONTINUACION: detectar si ya estamos dentro ──
-    # Problema: S_CONT y S_IMPU generan B_SIGNAL cada vez que el precio
-    # corrige 1 dia y luego sube — dentro de una tendencia ya abierta.
-    # Solucion: si el gatillo de HOY es SOLO S_CONT o S_IMPU (sin rebote),
-    # verificar que no haya habido otro B_SIGNAL en los ultimos 15 dias.
-    # Los gatillos de rebote (BOLL,SUELO,EARLY,R200,BSOFT,PULL) son frescos
-    # por definicion — requieren sobreventa o toque de soporte.
-    gatillos_rebote = (
-        df['S_PULL'].iloc[-1] or df['S_BOLL'].iloc[-1] or
-        df['S_SUELO'].iloc[-1] or df['S_EARLY'].iloc[-1] or
-        df['S_R200'].iloc[-1] or df['S_BSOFT'].iloc[-1]
-    )
-    gatillos_impulso_solo = not gatillos_rebote  # solo S_CONT o S_IMPU o S_MACD
-
-    if gatillos_impulso_solo:
-        # Si la señal es solo de impulso/continuacion, verificar frescura
-        signals_recientes = int(df['B_SIGNAL'].iloc[-16:-1].sum())
-        if signals_recientes > 0:
-            return None  # ya estamos dentro — no es entrada nueva
+    # Cuantos dias lleva B_RAW activo (1 = entrada limpia y fresca)
+    dias_raw = 0
+    for k in range(len(df)-1, max(len(df)-30,-1), -1):
+        if df['B_RAW'].iloc[k]:
+            dias_raw += 1
+        else:
+            break
 
     # Datos de salida
     precio   = float(df['Close'].iloc[-1])
@@ -290,8 +280,8 @@ def analizar_ticker(sym, periodo):
     sl       = max(precio - atr*sl_mult, precio*0.97)
 
     # Gatillos disparados hoy
-    gmap = {"PULL":"S_PULL","IMPU":"S_IMPU","BOLL":"S_BOLL","SUELO":"S_SUELO",
-            "MACD":"S_MACD","EARLY":"S_EARLY","CONT":"S_CONT","R200":"S_R200","BSOFT":"S_BSOFT"}
+    gmap = {"PULL":"S_PULL","BOLL":"S_BOLL","SUELO":"S_SUELO",
+            "EARLY":"S_EARLY","R200":"S_R200","BSOFT":"S_BSOFT"}
     gatillos = [n for n,c in gmap.items() if bool(df[c].iloc[-1])]
 
     # Radar OJO/BTD
@@ -309,6 +299,7 @@ def analizar_ticker(sym, periodo):
         "ADX":    f"{adx_v:.1f}",
         "TP1":    f"${tp1:.2f}",
         "SL":     f"${sl:.2f}",
+        "Días B_RAW": dias_raw,
         "Gatillos": ",".join(gatillos) if gatillos else "—",
         "OJO": bool(df['OJO'].iloc[-2:].any()),
         "BTD": bool(df['BTD'].iloc[-2:].any()),
@@ -429,6 +420,7 @@ if not st.session_state.listo:
                     "Ticker":   datos["Ticker"],
                     "Banda":    datos["Banda"],
                     "Precio":   datos["Precio"],
+                    "Días":     datos["Días B_RAW"],
                     "RSI":      datos["RSI"],
                     "ADX":      datos["ADX"],
                     "TP1":      datos["TP1"],
