@@ -1,4 +1,4 @@
- # ======================================================================
+# ======================================================================
 # SG6 SCREENER — APP UNIFICADA MOBILE + DESKTOP V2
 # Detecta viewport y adapta layout automaticamente
 # Santo Grial · Sistema KW-DNA
@@ -390,21 +390,27 @@ def analizar_ticker(ticker_name, periodo):
     shyb=df['S_PULL']|df['S_IMPU']|df['S_BOLL']|df['S_SUELO']|df['S_MACD_CROSS']|df['S_EARLY']|df['S_CONT']|df['S_R200']|df['S_BSOFT']
     svol=df['S_IMPU']|df['S_BOLL']|df['S_SUELO']|df['S_MACD_CROSS']|df['S_CONT']|df['S_R200']|df['S_BSOFT']
     df['B_RAW']=(is_bc&sbc)|(is_hyb&shyb)|(is_vol&svol)
-    # B_SIGNAL: primer dia de cada racha
     df['B_SIGNAL'] = df['B_RAW'] & ~df['B_RAW'].shift(1).fillna(False)
-    b_signal_arr = df['B_SIGNAL'].values
-    b_raw_arr    = df['B_RAW'].values
-
-    # Buscar el ultimo B_SIGNAL y contar dias desde entonces
-    # La posicion abierta existe si B_RAW sigue True o si hubo B_SIGNAL reciente
     dias_activa = 0
     e_price, atr_entry = None, None
-    for k in range(len(b_signal_arr)-1, max(len(b_signal_arr)-30,-1), -1):
-        if b_signal_arr[k]:
-            dias_activa = len(b_signal_arr) - 1 - k
-            e_price    = float(df["Close"].iloc[k])
-            atr_entry  = float(df["ATR_V"].iloc[k])
-            break
+    n = len(df)
+    if df['B_RAW'].iloc[-5:].any():
+        idx_inicio = n - 1
+        gaps = 0
+        for k in range(n-1, max(n-60,-1), -1):
+            if df['B_RAW'].iloc[k]:
+                idx_inicio = k; gaps = 0
+            else:
+                gaps += 1
+                if gaps >= 2: break
+        idx_entrada = idx_inicio
+        for k in range(idx_inicio, min(idx_inicio+10, n)):
+            if df['B_SIGNAL'].iloc[k]:
+                idx_entrada = k; break
+        dias_activa = n - 1 - idx_entrada
+        if idx_entrada < n:
+            e_price   = float(df['Close'].iloc[idx_entrada])
+            atr_entry = float(df['ATR_V'].iloc[idx_entrada])
     precio=float(df['Close'].iloc[-1]); banda=df['BANDA'].iloc[-1]
     tp_mult=1.6 if banda=="BC" else (2.0 if banda=="HYB" else 2.5)
     if e_price and atr_entry:
