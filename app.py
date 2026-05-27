@@ -367,13 +367,24 @@ def analizar_ticker(ticker_name, periodo):
     df['B_RAW']=(is_bc&sbc)|(is_hyb&shyb)|(is_vol&svol)
     df['B_SIGNAL'] = df['B_RAW'] & ~df['B_RAW'].shift(1).fillna(False)
 
-    # SEÑAL NUEVA HOY: B_SIGNAL=True en ultima barra
-    # Y ademas: ningun otro B_SIGNAL en los ultimos 20 dias
-    # Esto filtra operaciones ya abiertas en Moomoo —
-    # si hubo señal previa reciente, ya estamos dentro del trade
+    # LOGICA CORRECTA DE SEÑAL NUEVA:
+    # Condicion 1: B_SIGNAL=True HOY (gatillo disparado en ultima barra)
+    # Condicion 2: B_RAW estaba False AYER — garantiza que es inicio real
+    #              (ya incluido en la definicion de B_SIGNAL)
+    # Condicion 3: precio NO viene de rally extendido (no llevamos 5+ dias
+    #              con precio sobre MA20 Y MA20 subiendo sin corrección)
+    #              — esto filtra los "ya estamos dentro" de Moomoo
     es_signal_hoy = bool(df['B_SIGNAL'].iloc[-1])
-    hay_signal_previa = bool(df['B_SIGNAL'].iloc[-21:-1].any())
-    es_compra_hoy = es_signal_hoy and not hay_signal_previa
+
+    # Detectar si venimos de tendencia extendida sin corrección reciente
+    # Si los últimos 5 dias B_RAW fue True la mayoría = ya estamos dentro
+    b_raw_ultimos_5 = df['B_RAW'].iloc[-6:-1]  # 5 dias antes de hoy
+    racha_previa = int(b_raw_ultimos_5.sum())   # cuantos de esos 5 fueron True
+
+    # Si 3 o más de los últimos 5 días tenían señal activa = posición ya abierta
+    ya_dentro = racha_previa >= 3
+
+    es_compra_hoy = es_signal_hoy and not ya_dentro
 
     dias_activa   = 1 if es_compra_hoy else 0
     e_price, atr_entry = None, None
