@@ -156,18 +156,59 @@ def get_market_data():
     return result, vix, btc_pct, btc_price
 
 def analizar_ticker(sym, periodo):
+    # ── DESCARGA EN DOS PASOS ──
+    # 1. Histórico largo (periodo configurable) → solo para calcular BETA_SMOOTH (banda)
+    #    necesita 60 barras rolling std + 20 barras rolling mean = 80 barras mínimo
+    # 2. Último año fijo → para todos los indicadores técnicos (ATR, ADX, KDJ, etc.)
+    # 3. Barra de HOY via period="5d" → tiempo real mientras mercado abierto
     try:
-        df = yf.download(sym, period=periodo, progress=False, auto_adjust=True)
+        df_largo = yf.download(sym, period=periodo, progress=False, auto_adjust=True)
+        if df_largo.empty: return None
+        if isinstance(df_largo.columns, pd.MultiIndex):
+            df_largo.columns = df_largo.columns.get_level_values(0)
+    except: return None
+
+    # Calcular banda con el histórico largo (más preciso)
+    df_largo = df_largo.dropna(subset=['Close','Volume'])
+    df_largo = df_largo[df_largo['Volume']>0].copy()
+    if len(df_largo) < 100: return None
+
+    beta_raw    = df_largo['Close'].pct_change().mul(100).rolling(60).std(ddof=0)
+    beta_smooth = beta_raw.rolling(20).mean()
+    banda_serie = np.where(beta_smooth<1.0, "BC", np.where(beta_smooth<1.8, "HYB", "VOL"))
+    banda_hoy   = banda_serie[-1]  # banda actual del ticker
+
+    # Ahora bajar solo 1 año para los indicadores — más rápido
+    try:
+        df = yf.download(sym, period="1y", progress=False, auto_adjust=True)
         if df.empty: return None
-        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
     except: return None
     df = df.dropna(subset=['Close','Volume'])
     df = df[df['Volume']>0].copy()
-    if len(df) < 250: return None
+    if len(df) < 200: return None
 
-    # ── Bandas 3 niveles CRH v3 ──
-    df['BETA'] = df['Close'].pct_change().mul(100).rolling(60).std(ddof=0).rolling(20).mean()
-    df['BANDA'] = np.where(df['BETA']<1.0,"BC", np.where(df['BETA']<1.8,"HYB","VOL"))
+    # Asignar banda fija calculada arriba
+    df['BANDA'] = banda_hoy
+
+    # ── BARRA DE HOY EN TIEMPO REAL ──
+    # period="5d" interval="1d" incluye la barra parcial del dia en curso
+    try:
+        df_hoy = yf.download(sym, period="5d", interval="1d", progress=False, auto_adjust=True)
+        if isinstance(df_hoy.columns, pd.MultiIndex):
+            df_hoy.columns = df_hoy.columns.get_level_values(0)
+        if not df_hoy.empty:
+            ultima_hist = df.index[-1].date()
+            ultima_hoy  = df_hoy.index[-1].date()
+            if ultima_hoy > ultima_hist:
+                fila_hoy = df_hoy.iloc[[-1]].copy()
+                fila_hoy['BANDA'] = banda_hoy
+                df = pd.concat([df, fila_hoy[~fila_hoy.index.isin(df.index)]])
+    except: pass
+
+    # ── Banda ya calculada arriba con historico largo ──
+    # df['BANDA'] ya esta asignada desde banda_hoy
 
     # ── Medias ──
     df['MA20']  = df['Close'].ewm(span=20, adjust=False).mean()
