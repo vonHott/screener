@@ -30,23 +30,23 @@ st.markdown("""
 @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@600;700;800&display=swap');
 
 :root {
-    --bg:       #080c14;
+    --bg:        #080c14;
     --surface:  #0d1220;
-    --border:   #1a2235;
+    --border:    #1a2235;
     --border2:  #243048;
-    --text:     #e2e8f0;
+    --text:      #e2e8f0;
     --muted:    #4a5568;
-    --accent:   #00d4ff;
+    --accent:    #00d4ff;
     --green:    #00e5a0;
     --red:      #ff4d6d;
-    --orange:   #ff8c42;
-    --yellow:   #ffd166;
+    --orange:    #ff8c42;
+    --yellow:    #ffd166;
     --bc-bg:    #002d1a;
     --bc-fg:    #00e5a0;
-    --hyb-bg:   #001e3c;
-    --hyb-fg:   #00d4ff;
-    --vol-bg:   #2d1200;
-    --vol-fg:   #ff8c42;
+    --hyb-bg:    #001e3c;
+    --hyb-fg:    #00d4ff;
+    --vol-bg:    #2d1200;
+    --vol-fg:    #ff8c42;
 }
 
 html, body, [class*="css"] {
@@ -125,23 +125,6 @@ html, body, [class*="css"] {
 .ok   { color: var(--green); }
 .warn { color: var(--yellow); }
 .bad  { color: var(--red); }
-
-/* ── NEWS + HOT ── */
-.panel {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 14px 16px;
-    margin-bottom: 12px;
-}
-.panel-title { font-family: 'Syne', sans-serif; font-size: 12px; font-weight: 700; color: var(--muted); letter-spacing: .12em; text-transform: uppercase; margin-bottom: 10px; }
-.news-row { border-bottom: 1px solid var(--border); padding: 8px 0; font-size: 12px; }
-.news-row a { color: var(--accent); text-decoration: none; line-height: 1.4; }
-.news-src  { color: var(--muted); font-size: 10px; margin-top: 2px; }
-.hot-row   { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
-.hot-ticker { color: var(--text); font-weight: 500; min-width: 55px; }
-.hot-price  { color: var(--muted); }
-.hot-vol    { color: var(--muted); font-size: 10px; }
 
 /* ── CONFIG ── */
 .config-panel {
@@ -296,6 +279,7 @@ def get_market_data():
             btc_pct   = (btc_price - prev) / prev * 100
     except Exception: pass
     return result, vix_val, btc_pct, btc_price
+
 def analizar_ticker(ticker_name, periodo):
     try:
         df=yf.download(ticker_name,period=periodo,progress=False,auto_adjust=True)
@@ -367,23 +351,10 @@ def analizar_ticker(ticker_name, periodo):
     df['B_RAW']=(is_bc&sbc)|(is_hyb&shyb)|(is_vol&svol)
     df['B_SIGNAL'] = df['B_RAW'] & ~df['B_RAW'].shift(1).fillna(False)
 
-    # LOGICA CORRECTA DE SEÑAL NUEVA:
-    # Condicion 1: B_SIGNAL=True HOY (gatillo disparado en ultima barra)
-    # Condicion 2: B_RAW estaba False AYER — garantiza que es inicio real
-    #              (ya incluido en la definicion de B_SIGNAL)
-    # Condicion 3: precio NO viene de rally extendido (no llevamos 5+ dias
-    #              con precio sobre MA20 Y MA20 subiendo sin corrección)
-    #              — esto filtra los "ya estamos dentro" de Moomoo
     es_signal_hoy = bool(df['B_SIGNAL'].iloc[-1])
-
-    # Detectar si venimos de tendencia extendida sin corrección reciente
-    # Si los últimos 5 dias B_RAW fue True la mayoría = ya estamos dentro
-    b_raw_ultimos_5 = df['B_RAW'].iloc[-6:-1]  # 5 dias antes de hoy
-    racha_previa = int(b_raw_ultimos_5.sum())   # cuantos de esos 5 fueron True
-
-    # Si 3 o más de los últimos 5 días tenían señal activa = posición ya abierta
+    b_raw_ultimos_5 = df['B_RAW'].iloc[-6:-1]
+    racha_previa = int(b_raw_ultimos_5.sum())
     ya_dentro = racha_previa >= 3
-
     es_compra_hoy = es_signal_hoy and not ya_dentro
 
     dias_activa   = 1 if es_compra_hoy else 0
@@ -487,7 +458,7 @@ if not st.session_state.listo:
 
     # VIX + BTC + Contexto
     sp_pct = indices.get("S&P 500",{}).get("pct",0)
-    if vix_val<18 and sp_pct>0:    ctx_cls,ctx_txt="ok","✅ Condiciones favorables"
+    if vix_val<18 and sp_pct>0:   ctx_cls,ctx_txt="ok","✅ Condiciones favorables"
     elif vix_val>25 or sp_pct<-1:  ctx_cls,ctx_txt="bad","⚠️ Mercado defensivo"
     else:                           ctx_cls,ctx_txt="warn","⚪ Contexto mixto"
     vcls = "ok" if vix_val<18 else ("warn" if vix_val<25 else "bad")
@@ -514,13 +485,9 @@ if not st.session_state.listo:
     </div>
     """, unsafe_allow_html=True)
 
-    # Noticias + Hot en 2 columnas desktop / 1 columna mobile
-
-    st.markdown("---")
-
-    # Configuración
+    # Configuración (Subida al espacio superior inmediato tras remover noticias)
     st.markdown('<div class="config-panel"><div class="config-title">⚙️ Configuración del escáner</div>', unsafe_allow_html=True)
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3 = st.columns([1.2, 1.5, 1])
     with col1:
         periodo = st.selectbox("Período histórico", ["2y","1y","6mo"], index=0)
     with col2:
@@ -541,8 +508,7 @@ if not st.session_state.listo:
             datos,_=analizar_ticker(ticker,periodo)
             if datos is None: continue
             if datos["Días"]==1:
-                ant="Día 1" if datos["Días"]==1 else f"Activa {datos['Días']}d"
-                lista_c.append({"Ticker":datos["Ticker"],"Banda":datos["Banda"],                    "Gatillos":datos["Gatillos"],"P.Ent":datos["P.Ent"],"Precio":datos["Precio"],
+                lista_c.append({"Ticker":datos["Ticker"],"Banda":datos["Banda"],"Gatillos":datos["Gatillos"],"P.Ent":datos["P.Ent"],"Precio":datos["Precio"],
                     "RSI":datos["RSI"],"ADX":datos["ADX"],"TP1":datos["TP1"],"%TP":datos["%TP"],"SL":datos["SL"]})
             if datos["rsi_raw"]<rsi_umbral:
                 lista_r.append({"Ticker":datos["Ticker"],"Banda":datos["Banda"],"Precio":datos["Precio"],"RSI":datos["RSI"],"ADX":datos["ADX"]})
@@ -563,9 +529,9 @@ if not st.session_state.listo:
 # ======================================================================
 lc=st.session_state.compras; lr=st.session_state.rsi; lrd=st.session_state.radar; ru=st.session_state.ru
 
-st.success(f"✅ Escáner completado — {len(TICKERS_DEFAULT)} tickers procesados")
+st.success(f"¼… Escáner completado — {len(TICKERS_DEFAULT)} tickers procesados")
 
-# Botones-contadores
+# Botones-contadores responsivos (Distribuidos uniformemente en mobile/desktop)
 c1,c2,c3,c4=st.columns([1,1,1,1])
 with c1:
     if st.button(f"🚀 Compras + ADD\n\n{len(lc)}", use_container_width=True):
