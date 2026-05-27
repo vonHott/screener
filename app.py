@@ -250,12 +250,32 @@ def analizar_ticker(sym, periodo):
     is_vol = df['BANDA']=="VOL"
 
     df['B_RAW']    = (is_bc&sbc)|(is_hyb&shyb)|(is_vol&svol)
-    # B_SIGNAL: transicion False→True, igual que Moomoo B_RAW AND (REF(B_RAW,1)=0)
+    # B_SIGNAL: transicion False→True — identico a Moomoo B_RAW AND (REF(B_RAW,1)=0)
     df['B_SIGNAL'] = df['B_RAW'] & ~df['B_RAW'].shift(1).fillna(False)
 
     # ── SEÑAL DE HOY: solo si B_SIGNAL es True en la ultima barra ──
     if not df['B_SIGNAL'].iloc[-1]:
         return None
+
+    # ── FILTRO ANTI-CONTINUACION: detectar si ya estamos dentro ──
+    # Problema: S_CONT y S_IMPU generan B_SIGNAL cada vez que el precio
+    # corrige 1 dia y luego sube — dentro de una tendencia ya abierta.
+    # Solucion: si el gatillo de HOY es SOLO S_CONT o S_IMPU (sin rebote),
+    # verificar que no haya habido otro B_SIGNAL en los ultimos 15 dias.
+    # Los gatillos de rebote (BOLL,SUELO,EARLY,R200,BSOFT,PULL) son frescos
+    # por definicion — requieren sobreventa o toque de soporte.
+    gatillos_rebote = (
+        df['S_PULL'].iloc[-1] or df['S_BOLL'].iloc[-1] or
+        df['S_SUELO'].iloc[-1] or df['S_EARLY'].iloc[-1] or
+        df['S_R200'].iloc[-1] or df['S_BSOFT'].iloc[-1]
+    )
+    gatillos_impulso_solo = not gatillos_rebote  # solo S_CONT o S_IMPU o S_MACD
+
+    if gatillos_impulso_solo:
+        # Si la señal es solo de impulso/continuacion, verificar frescura
+        signals_recientes = int(df['B_SIGNAL'].iloc[-16:-1].sum())
+        if signals_recientes > 0:
+            return None  # ya estamos dentro — no es entrada nueva
 
     # Datos de salida
     precio   = float(df['Close'].iloc[-1])
