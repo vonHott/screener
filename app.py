@@ -267,60 +267,35 @@ def calcular_rsi(close_series, periodo=14):
     rsi = 100-(100/(1+rs)); rsi[:periodo] = np.nan
     return pd.Series(rsi, index=close_series.index)
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_market_data():
+    """Indices, VIX y BTC — cache 5 min"""
     indices = {"S&P 500":"^GSPC","Nasdaq 100":"^NDX","Dow Jones":"^DJI","Russell 2000":"^RUT"}
     result = {}
     for name, sym in indices.items():
         try:
-            h = yf.Ticker(sym).history(period="2d")
+            h = yf.Ticker(sym).history(period="5d", interval="1d")
             if len(h)>=2:
                 prev=float(h['Close'].iloc[-2]); curr=float(h['Close'].iloc[-1])
                 result[name] = {"price":curr,"pct":(curr-prev)/prev*100}
         except Exception:
             result[name] = {"price":0,"pct":0}
-    vix_val=0
+    # VIX
+    vix_val = 0
     try:
-        h=yf.Ticker("^VIX").history(period="1d")
-        if not h.empty: vix_val=float(h['Close'].iloc[-1])
+        h = yf.Ticker("^VIX").history(period="5d", interval="1d")
+        if not h.empty: vix_val = float(h['Close'].iloc[-1])
     except Exception: pass
-    btc_pct=0
+    # BTC precio actual y cambio 24h
+    btc_pct = 0; btc_price = 0
     try:
-        h=yf.Ticker("BTC-USD").history(period="2d")
-        if len(h)>=2: btc_pct=(float(h['Close'].iloc[-1])-float(h['Close'].iloc[-2]))/float(h['Close'].iloc[-2])*100
+        h = yf.Ticker("BTC-USD").history(period="5d", interval="1d")
+        if len(h)>=2:
+            btc_price = float(h['Close'].iloc[-1])
+            prev      = float(h['Close'].iloc[-2])
+            btc_pct   = (btc_price - prev) / prev * 100
     except Exception: pass
-    noticias=[]
-    try:
-        for sym in ["SPY","QQQ"]:
-            try:
-                tk=yf.Ticker(sym)
-                news=tk.get_news() if hasattr(tk,'get_news') else tk.news
-                for n in (news or []):
-                    t=n.get("title",""); l=n.get("link","") or n.get("url","#"); s=n.get("source","") or n.get("publisher","")
-                    if t and not any(x["title"]==t for x in noticias):
-                        noticias.append({"title":t,"link":l,"source":s})
-                if len(noticias)>=6: break
-            except Exception: continue
-    except Exception: pass
-    hot=[]
-    try:
-        sc=yf.screen("most_active",size=10)
-        for q in (sc.get("quotes",[]) if sc else []):
-            sym=q.get("symbol",""); pct=q.get("regularMarketChangePercent",0) or 0
-            vol=q.get("regularMarketVolume",0) or 0; avol=q.get("averageDailyVolume3Month",1) or 1
-            price=q.get("regularMarketPrice",0) or 0
-            if sym: hot.append({"T":sym,"P":f"${price:.2f}","Δ":f"{pct:+.2f}%","V×":f"×{vol/avol:.1f}","_p":pct})
-    except Exception:
-        for sym in ["NVDA","TSLA","AAPL","AMZN","META","AMD","MSFT","SPY","QQQ","COIN"]:
-            try:
-                h=yf.Ticker(sym).history(period="2d")
-                if len(h)>=2:
-                    p=float(h['Close'].iloc[-1]); pc=(p-float(h['Close'].iloc[-2]))/float(h['Close'].iloc[-2])*100
-                    pv=float(h['Volume'].iloc[-1]); pa=float(h['Volume'].mean())
-                    hot.append({"T":sym,"P":f"${p:.2f}","Δ":f"{pc:+.2f}%","V×":f"×{pv/pa:.1f}","_p":pc})
-            except Exception: pass
-    return result, vix_val, btc_pct, noticias, hot
-
+    return result, vix_val, btc_pct, btc_price
 def analizar_ticker(ticker_name, periodo):
     try:
         df=yf.download(ticker_name,period=periodo,progress=False,auto_adjust=True)
@@ -392,9 +367,14 @@ def analizar_ticker(ticker_name, periodo):
     df['B_RAW']=(is_bc&sbc)|(is_hyb&shyb)|(is_vol&svol)
     df['B_SIGNAL'] = df['B_RAW'] & ~df['B_RAW'].shift(1).fillna(False)
 
-    # Solo detectar señal de HOY (ultima barra del dia)
-    # App se ejecuta al cierre — solo importa si hoy hay señal nueva
-    es_compra_hoy = bool(df['B_SIGNAL'].iloc[-1])
+    # SEÑAL NUEVA HOY: B_SIGNAL=True en ultima barra
+    # Y ademas: ningun otro B_SIGNAL en los ultimos 20 dias
+    # Esto filtra operaciones ya abiertas en Moomoo —
+    # si hubo señal previa reciente, ya estamos dentro del trade
+    es_signal_hoy = bool(df['B_SIGNAL'].iloc[-1])
+    hay_signal_previa = bool(df['B_SIGNAL'].iloc[-21:-1].any())
+    es_compra_hoy = es_signal_hoy and not hay_signal_previa
+
     dias_activa   = 1 if es_compra_hoy else 0
     e_price, atr_entry = None, None
     if es_compra_hoy:
@@ -483,7 +463,7 @@ st.markdown("""
 # ======================================================================
 if not st.session_state.listo:
     with st.spinner("Cargando datos de mercado..."):
-        indices, vix_val, btc_pct, noticias, hot = get_market_data()
+        indices, vix_val, btc_pct, btc_price = get_market_data()
 
     # Índices — grid responsivo 4 col desktop / 2 col mobile
     st.markdown('<div class="idx-grid">', unsafe_allow_html=True)
@@ -524,24 +504,6 @@ if not st.session_state.listo:
     """, unsafe_allow_html=True)
 
     # Noticias + Hot en 2 columnas desktop / 1 columna mobile
-    col_n, col_h = st.columns([3,2])
-    with col_n:
-        st.markdown('<div class="panel"><div class="panel-title">📰 Noticias del mercado</div>', unsafe_allow_html=True)
-        if noticias:
-            for n in noticias[:6]:
-                st.markdown(f'<div class="news-row"><a href="{n["link"]}" target="_blank">{n["title"]}</a><div class="news-src">{n["source"]}</div></div>', unsafe_allow_html=True)
-        else:
-            st.markdown('<p style="color:#4a5568;font-size:12px;">Sin noticias disponibles.</p>', unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-    with col_h:
-        st.markdown('<div class="panel"><div class="panel-title">🔥 Más activas hoy</div>', unsafe_allow_html=True)
-        if hot:
-            for h in sorted(hot, key=lambda x:abs(x.get("_p",0)), reverse=True)[:8]:
-                col_v="#00e5a0" if h.get("_p",0)>=0 else "#ff4d6d"
-                st.markdown(f'<div class="hot-row"><span class="hot-ticker">{h["T"]}</span><span class="hot-price">{h["P"]}</span><span style="color:{col_v};font-weight:600">{h["Δ"]}</span><span class="hot-vol">{h["V×"]}</span></div>', unsafe_allow_html=True)
-        else:
-            st.markdown('<p style="color:#4a5568;font-size:12px;">Sin datos disponibles.</p>', unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown("---")
 
