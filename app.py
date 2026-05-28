@@ -13,8 +13,8 @@ import warnings
 warnings.filterwarnings('ignore')
 
 st.set_page_config(
-    page_title="Rebote Screener",
-    page_icon="🎯",
+    page_title="Screener CRH",
+    page_icon="🔥",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -334,10 +334,10 @@ def csc(v):
 st.markdown("""
 <div class="header">
   <div>
-    <h1>🎯 Rebote <span>Screener</span></h1>
+    <h1>🔥 Rebote  <span>Screener 🔥 </span></h1>
     <p>4 GATILLOS DE REBOTE · SOBREVENTA · SOPORTE MA · BOLLINGER · CRUCE KDJ+MACD</p>
   </div>
-  <div class="badge">LIVE</div>
+  <div class="badge">WIP</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -459,4 +459,4 @@ render_seccion(
     "<b>Criterio</b>: K cruza D + MACD gira o cruza al alza + RSI &lt;50 + volumen activo &nbsp;·&nbsp; <b>Acción</b>: cambio de momentum confirmado — entrada anticipada"
 )
 
-st.markdown('<p class="footer">Rebote Screener · 4 gatillos independientes · Solo fines educativos · No es asesoría financiera</p>', unsafe_allow_html=True)
+st.markdown('<p class="footer"> Solo fines educativos · No es asesoría financiera</p>', unsafe_allow_html=True)
