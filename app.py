@@ -1,7 +1,8 @@
 # ======================================================================
-# VMC CIPHER B SCREENER
-# Ejecuta automaticamente al cargar · Sin botones · Sin bandas
-# Muestra señales VMC de hoy y ayer con RSI, KDJ, ADX, Put/Call
+# SCREENER DE REBOTES — V FINAL
+# Ejecuta automaticamente al cargar · Sin botones · Sin bandas · Sin ADX
+# Detecta candidatos de rebote desde abajo para mirar en Moomoo
+# El usuario evalua riesgo y decide entrada
 # ======================================================================
 
 import streamlit as st
@@ -12,8 +13,8 @@ import warnings
 warnings.filterwarnings('ignore')
 
 st.set_page_config(
-    page_title="VMC Screener",
-    page_icon="🌊",
+    page_title="Rebote Screener",
+    page_icon="🎯",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -24,7 +25,7 @@ st.markdown("""
 :root {
     --bg:#080c14; --surface:#0d1220; --border:#1a2235; --border2:#243048;
     --text:#e2e8f0; --muted:#4a5568; --accent:#00d4ff;
-    --green:#00e5a0; --red:#ff4d6d; --yellow:#ffd166;
+    --green:#00e5a0; --red:#ff4d6d; --yellow:#ffd166; --purple:#b48cff;
 }
 html,body,[class*="css"]{font-family:'DM Mono',monospace;background:var(--bg)!important;color:var(--text)}
 [data-testid="stSidebar"],[data-testid="collapsedControl"],#MainMenu,footer,header{display:none!important}
@@ -40,7 +41,7 @@ html,body,[class*="css"]{font-family:'DM Mono',monospace;background:var(--bg)!im
 @media(max-width:700px){.idx-grid{grid-template-columns:1fr 1fr}}
 .idx-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 14px}
 .idx-label{color:var(--muted);font-size:9px;letter-spacing:.1em;text-transform:uppercase;margin-bottom:3px}
-.idx-price{color:var(--text);font-size:clamp(14px,2vw,18px);font-weight:500;margin-bottom:1px}
+.idx-price{color:var(--text);font-size:clamp(14px,2vw,18px);font-weight:500}
 .up{color:var(--green);font-size:11px}.down{color:var(--red);font-size:11px}
 
 .ctx-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:16px}
@@ -51,12 +52,16 @@ html,body,[class*="css"]{font-family:'DM Mono',monospace;background:var(--bg)!im
 .ctx-sub{font-size:11px;font-weight:500;margin-top:2px}
 .ok{color:var(--green)}.warn{color:var(--yellow)}.bad{color:var(--red)}
 
-.sec{font-family:'Syne',sans-serif;font-size:13px;font-weight:700;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;padding:10px 0 6px;border-bottom:1px solid var(--border2);margin-bottom:10px}
+.sec{font-family:'Syne',sans-serif;font-size:13px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;padding:14px 0 6px;border-bottom:1px solid var(--border2);margin:18px 0 10px}
+.sec-os{color:var(--green);border-bottom-color:var(--green)}
+.sec-mas{color:var(--yellow);border-bottom-color:var(--yellow)}
+.sec-bb{color:var(--accent);border-bottom-color:var(--accent)}
+.sec-cr{color:var(--purple);border-bottom-color:var(--purple)}
 .glosario{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:11px;color:var(--muted);line-height:1.9}
 .glosario b{color:#718096}
 [data-testid="stDataFrame"]{border:1px solid var(--border)!important;border-radius:10px!important;font-family:'DM Mono',monospace!important;font-size:11px!important}
 .footer{color:var(--border2);font-size:10px;text-align:center;padding:16px 0 4px}
-[data-testid="stSelectbox"] label{font-size:11px!important;color:var(--muted)!important}
+.score-hi{background:#003d2520;border:1px solid var(--green)44;color:var(--green);font-weight:700;padding:2px 6px;border-radius:4px}
 </style>
 """, unsafe_allow_html=True)
 
@@ -88,43 +93,7 @@ TICKERS = [
 ]
 
 # ======================================================================
-# VMC CIPHER B — calculo Python fiel al Pine Script original (MPL 2.0)
-# © vumanchu — https://www.tradingview.com/script/Msm4SjwI-VuManChu-Cipher-B-Divergences
-# ======================================================================
-def calcular_vmc(df):
-    # WaveTrend Oscillator — fiel al Pine Script de VuManChu (MPL 2.0)
-    n1, n2 = 10, 21
-
-    # Umbral de sobreventa adaptado para timeframe diario en acciones
-    # TradingView usa -53 en 4h/crypto — en 1D stocks se relaja a -40
-    os_daily = -40
-
-    hlc3 = (df['High'] + df['Low'] + df['Close']) / 3
-    esa  = hlc3.ewm(span=n1, adjust=False).mean()
-    de   = (hlc3 - esa).abs().ewm(span=n1, adjust=False).mean()
-    ci   = (hlc3 - esa) / (0.015 * de.replace(0, 1e-8))
-    wt1  = ci.ewm(span=n2, adjust=False).mean()
-    wt2  = wt1.rolling(4).mean()
-
-    # MFI modificado (money flow)
-    mfi = ((df['Close'] - df['Open']) / (df['High'] - df['Low']).replace(0, 1e-8) * 150).rolling(60).mean()
-
-    # BUY DOT: wt2 gira hacia arriba desde zona de sobreventa + MFI positivo
-    # wt2 es el oscilador lento — su giro desde abajo es la señal del circulo verde
-    wt2_giro_up = wt2 > wt2.shift(1)
-    wt2_venia_os = wt2.shift(1) < os_daily
-    vmc_buy = wt2_giro_up & wt2_venia_os & (mfi > 0)
-
-    # DIVERGENCIA ALCISTA: precio hace nuevo minimo pero wt2 no lo hace
-    # confirmando que la presion bajista se agota
-    p_ll    = df['Close'] < df['Close'].rolling(5).min().shift(1)
-    w_hl    = wt2 > wt2.rolling(5).min().shift(1)
-    vmc_div = p_ll & w_hl & (wt2 < os_daily)
-
-    return wt1, wt2, vmc_buy, vmc_div
-
-# ======================================================================
-# PUT/CALL RATIO
+# PUT/CALL RATIO 5 SEMANAS
 # ======================================================================
 @st.cache_data(ttl=14400, show_spinner=False)
 def calcular_pcr(ticker_name, precio_actual):
@@ -153,13 +122,9 @@ def calcular_pcr(ticker_name, precio_actual):
         if pd_.empty or cd_.empty: return None
         pw = float(pd_.loc[pd_['openInterest'].idxmax(),'strike'])
         cw = float(cd_.loc[cd_['openInterest'].idxmax(),'strike'])
-        # PCR por volumen, fallback OI
-        if total_cv > 0:
-            pcr = round(total_pv/total_cv, 2)
-        elif total_co > 0:
-            pcr = round(total_po/total_co, 2)
-        else:
-            return None
+        if total_cv > 0:   pcr = round(total_pv/total_cv, 2)
+        elif total_co > 0: pcr = round(total_po/total_co, 2)
+        else: return None
         if   pcr < 0.7: pcr_lbl = "🟢"
         elif pcr > 1.0: pcr_lbl = "🔴"
         else:           pcr_lbl = "⚪"
@@ -199,19 +164,9 @@ def get_market_data():
     return result, vix, btc_pct, btc_price
 
 # ======================================================================
-# ANALIZAR TICKER
+# ANALIZAR TICKER — calcula 4 tipos de rebote
 # ======================================================================
 def analizar_ticker(sym):
-    # Histórico largo para la banda (solo BETA necesita 2y)
-    try:
-        df2 = yf.download(sym, period="2y", progress=False, auto_adjust=True)
-        if df2.empty: return None
-        if isinstance(df2.columns, pd.MultiIndex): df2.columns = df2.columns.get_level_values(0)
-        df2 = df2.dropna(subset=['Close','Volume'])
-        df2 = df2[df2['Volume']>0]
-    except: return None
-
-    # 1 año para todos los indicadores
     try:
         df = yf.download(sym, period="1y", progress=False, auto_adjust=True)
         if df.empty: return None
@@ -233,6 +188,8 @@ def analizar_ticker(sym):
     df['MA20']  = df['Close'].ewm(span=20,adjust=False).mean()
     df['MA50']  = df['Close'].ewm(span=50,adjust=False).mean()
     df['MA200'] = df['Close'].ewm(span=200,adjust=False).mean()
+
+    # ATR
     hl=(df['High']-df['Low']); hpc=(df['High']-df['Close'].shift(1)).abs(); lpc=(df['Low']-df['Close'].shift(1)).abs()
     df['ATR'] = pd.concat([hl,hpc,lpc],axis=1).max(axis=1).rolling(14).mean()
 
@@ -247,51 +204,101 @@ def analizar_ticker(sym):
     # KDJ
     lm=df['Low'].rolling(9).min(); hm=df['High'].rolling(9).max()
     rsv=(df['Close']-lm)/(hm-lm).replace(0,1e-8)*100
-    k=rsv.ewm(alpha=1/3,adjust=False).mean(); d=k.ewm(alpha=1/3,adjust=False).mean()
+    k=rsv.ewm(alpha=1/3,adjust=False).mean()
+    d=k.ewm(alpha=1/3,adjust=False).mean()
     df['K']=k; df['D']=d; df['J']=3*k-2*d
+    df['GIRO_J']   = df['J'] > df['J'].shift(1)
+    df['CROSS_KD'] = (k>d) & (k.shift(1) <= d.shift(1))
 
-    # RSI
+    # RSI Wilder
     delta=df['Close'].diff(); gain=delta.clip(lower=0); loss=(-delta).clip(lower=0)
     df['RSI'] = 100-(100/(1+(gain.ewm(alpha=1/14,adjust=False).mean()/loss.ewm(alpha=1/14,adjust=False).mean().replace(0,1e-8))))
 
-    # VMC Cipher B
-    wt1, wt2, vmc_buy, vmc_div = calcular_vmc(df)
-    df['VMC_BUY'] = vmc_buy
-    df['VMC_DIV'] = vmc_div
-    df['WT2']     = wt2
+    # MACD
+    dif = df['Close'].ewm(span=12,adjust=False).mean() - df['Close'].ewm(span=26,adjust=False).mean()
+    dea = dif.ewm(span=9,adjust=False).mean()
+    hist = dif - dea
+    df['GIRO_MACD'] = (hist > hist.shift(1)) & (hist.shift(1) <= hist.shift(2))
+    df['CROSS_MACD']= (dif > dea) & (dif.shift(1) <= dea.shift(1))
 
-    # ── Señal: VMC hoy o ayer ──
-    hoy  = bool(df['VMC_BUY'].iloc[-1] or df['VMC_DIV'].iloc[-1])
-    ayer = bool(df['VMC_BUY'].iloc[-2] or df['VMC_DIV'].iloc[-2]) if len(df)>1 else False
+    # Bollinger
+    df['BB_MID'] = df['Close'].rolling(20).mean()
+    df['BB_STD'] = df['Close'].rolling(20).std(ddof=0)
+    df['BB_DN']  = df['BB_MID'] - 2*df['BB_STD']
 
-    if not (hoy or ayer): return None
+    # Volumen
+    df['VOL_MA'] = df['Volume'].rolling(20).mean()
+    df['VOL_OK'] = df['Volume'] > df['VOL_MA'] * 0.85
 
-    precio = float(df['Close'].iloc[-1])
-    rsi_v  = float(df['RSI'].iloc[-1]) if not pd.isna(df['RSI'].iloc[-1]) else 0
-    adx_v  = float(df['ADX'].iloc[-1]) if not pd.isna(df['ADX'].iloc[-1]) else 0
-    j_v    = float(df['J'].iloc[-1])   if not pd.isna(df['J'].iloc[-1])  else 0
-    wt2_v  = float(df['WT2'].iloc[-1]) if not pd.isna(df['WT2'].iloc[-1]) else 0
+    # ── 4 GATILLOS DE REBOTE ──
+    rsi_v = float(df['RSI'].iloc[-1]) if not pd.isna(df['RSI'].iloc[-1]) else 50
+    j_v   = float(df['J'].iloc[-1])   if not pd.isna(df['J'].iloc[-1])  else 50
+    adx_v = float(df['ADX'].iloc[-1]) if not pd.isna(df['ADX'].iloc[-1]) else 0
+    precio= float(df['Close'].iloc[-1])
 
-    tipo = []
-    if df['VMC_BUY'].iloc[-1]: tipo.append("🟢 Dot")
-    if df['VMC_DIV'].iloc[-1]: tipo.append("🔵 Div")
-    if df['VMC_BUY'].iloc[-2] if len(df)>1 else False: tipo.append("🟡 Dot-1")
-    if df['VMC_DIV'].iloc[-2] if len(df)>1 else False: tipo.append("🔵 Div-1")
+    # 1. SOBREVENTA FRESCA: RSI<35 + giro KDJ + vela verde + volumen
+    sobreventa = (
+        rsi_v < 35 and
+        bool(df['GIRO_J'].iloc[-1]) and
+        precio > float(df['Low'].iloc[-2]) and
+        bool(df['VOL_OK'].iloc[-1])
+    )
+
+    # 2. TOCANDO SOPORTE MA50 o MA200 + giro KDJ
+    ma50_v  = float(df['MA50'].iloc[-1])
+    ma200_v = float(df['MA200'].iloc[-1])
+    low_v   = float(df['Low'].iloc[-1])
+    soporte = (
+        ( (low_v <= ma50_v * 1.015 and precio > ma50_v * 0.985) or
+          (low_v <= ma200_v * 1.015 and precio > ma200_v * 0.985) ) and
+        bool(df['GIRO_J'].iloc[-1]) and
+        bool(df['VOL_OK'].iloc[-1])
+    )
+
+    # 3. REBOTE BOLLINGER: tocó BB_DN ayer y cerró arriba hoy
+    bb_dn_y = float(df['BB_DN'].iloc[-2])
+    low_y   = float(df['Low'].iloc[-2])
+    bb_dn   = float(df['BB_DN'].iloc[-1])
+    rebote_bb = (
+        low_y <= bb_dn_y and
+        precio > bb_dn and
+        bool(df['GIRO_J'].iloc[-1]) and
+        bool(df['VOL_OK'].iloc[-1])
+    )
+
+    # 4. CRUCE KDJ + MACD en zona baja
+    cruce = (
+        bool(df['CROSS_KD'].iloc[-1] or df['CROSS_KD'].iloc[-2]) and
+        bool(df['GIRO_MACD'].iloc[-1] or df['CROSS_MACD'].iloc[-1] or df['CROSS_MACD'].iloc[-2]) and
+        rsi_v < 50 and
+        bool(df['VOL_OK'].iloc[-1])
+    )
+
+    if not (sobreventa or soporte or rebote_bb or cruce):
+        return None
+
+    # Score: cuantos gatillos dispararon (1-4)
+    score = sum([sobreventa, soporte, rebote_bb, cruce])
 
     return {
-        "Ticker":  sym,
-        "Precio":  f"${precio:.2f}",
-        "precio_raw": precio,
-        "Señal":   " ".join(tipo),
-        "RSI":     f"{rsi_v:.1f}",
-        "rsi_raw": rsi_v,
-        "J(KDJ)":  f"{j_v:.1f}",
-        "ADX":     f"{adx_v:.1f}",
-        "WT2":     f"{wt2_v:.1f}",
+        "sym": sym,
+        "precio": precio,
+        "precio_str": f"${precio:.2f}",
+        "rsi": rsi_v,
+        "rsi_str": f"{rsi_v:.1f}",
+        "j": j_v,
+        "j_str": f"{j_v:.1f}",
+        "adx": adx_v,
+        "adx_str": f"{adx_v:.1f}",
+        "score": score,
+        "sobreventa": sobreventa,
+        "soporte":    soporte,
+        "rebote_bb":  rebote_bb,
+        "cruce":      cruce,
     }
 
 # ======================================================================
-# HELPERS ESTILO
+# HELPERS DE ESTILO
 # ======================================================================
 def cr(v):
     try:
@@ -300,7 +307,6 @@ def cr(v):
         if r>65: return "color:#00e5a0;font-weight:600"
     except: pass
     return "color:#4a5568"
-
 def cj(v):
     try:
         r=float(str(v))
@@ -308,12 +314,19 @@ def cj(v):
         if r>80: return "color:#ffd166;font-weight:600"
     except: pass
     return "color:#4a5568"
-
 def cs(v):
     s=str(v)
     if "🟢" in s: return "color:#00e5a0;font-weight:600"
     if "🔴" in s: return "color:#ff4d6d;font-weight:600"
+    if "🟡" in s: return "color:#ffd166;font-weight:600"
     return "color:#4a5568"
+def csc(v):
+    try:
+        n = int(v)
+        if n >= 3: return "background-color:#003d25;color:#00e5a0;font-weight:700;text-align:center"
+        if n == 2: return "background-color:#1e3a5f;color:#00d4ff;font-weight:600;text-align:center"
+    except: pass
+    return "color:#4a5568;text-align:center"
 
 # ======================================================================
 # HEADER
@@ -321,18 +334,17 @@ def cs(v):
 st.markdown("""
 <div class="header">
   <div>
-    <h1>🌊 VMC Cipher B <span>Screener</span></h1>
-    <p>WAVETREND OSCILLATOR · BUY DOTS + DIVERGENCIAS · HOY Y AYER · PUT/CALL 5 SEMANAS</p>
+    <h1>🎯 Rebote <span>Screener</span></h1>
+    <p>4 GATILLOS DE REBOTE · SOBREVENTA · SOPORTE MA · BOLLINGER · CRUCE KDJ+MACD</p>
   </div>
   <div class="badge">LIVE</div>
 </div>
 """, unsafe_allow_html=True)
 
 # ======================================================================
-# MARKET DATA — siempre visible
+# MARKET DATA
 # ======================================================================
 indices, vix, btc_pct, btc_price = get_market_data()
-
 st.markdown('<div class="idx-grid">', unsafe_allow_html=True)
 for name, data in indices.items():
     p=data["price"]; pct=data["pct"]
@@ -357,65 +369,94 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-st.markdown("---")
-
 # ======================================================================
-# ESCANEO AUTOMATICO — sin botón
+# ESCANEO AUTOMATICO
 # ======================================================================
-st.markdown('<div class="sec">🌊 VMC BUY DOTS + DIVERGENCIAS — HOY Y AYER</div>', unsafe_allow_html=True)
-st.markdown("""<div class="glosario">
-<b>🟢 Dot</b> — círculo verde VMC hoy: WT2 cruza WT1 desde sobreventa + MFI positivo &nbsp;·&nbsp;
-<b>🔵 Div</b> — divergencia alcista hoy: precio lower low + WT2 higher low en sobreventa &nbsp;·&nbsp;
-<b>🟡 Dot-1</b> / <b>Div-1</b> — señal de ayer &nbsp;·&nbsp;
-<b>WT2</b> — WaveTrend 2 (zona &lt;-53 = sobreventa extrema) &nbsp;·&nbsp;
-<b>RSI</b> — rojo &lt;33 · verde &gt;65 &nbsp;·&nbsp;
-<b>J(KDJ)</b> — &lt;20 zona de giro alcista &nbsp;·&nbsp;
-<b>P/C</b> — Put/Call ratio por volumen 5 semanas: 🟢&lt;0.7 alcista · 🔴&gt;1.0 bajista
-</div>""", unsafe_allow_html=True)
-
-prog = st.progress(0, text="Escaneando VMC Cipher B...")
-resultados = []
+prog = st.progress(0, text="Escaneando rebotes...")
+todos = []
 
 for idx, sym in enumerate(TICKERS):
     prog.progress(int((idx+1)/len(TICKERS)*100), text=f"{sym}  ({idx+1}/{len(TICKERS)})")
     datos = analizar_ticker(sym)
     if datos is None: continue
-
-    # Put/Call ratio
     skip_opciones = any(x in sym for x in ['-USD','-F','=X','=F','.DE','.SW','.HK'])
-    pcr_data = None
-    if not skip_opciones:
-        pcr_data = calcular_pcr(sym, datos["precio_raw"])
-
-    resultados.append({
-        "Ticker":  datos["Ticker"],
-        "Precio":  datos["Precio"],
-        "Señal":   datos["Señal"],
-        "WT2":     datos["WT2"],
-        "RSI":     datos["RSI"],
-        "J(KDJ)":  datos["J(KDJ)"],
-        "ADX":     datos["ADX"],
-        "Put Wall": pcr_data["pw"]  if pcr_data else "—",
-        "Call Wall":pcr_data["cw"]  if pcr_data else "—",
-        "P/C":     pcr_data["pcr"] if pcr_data else "—",
-        "GEX":     pcr_data["gex"] if pcr_data else "—",
-    })
-
+    pcr_data = calcular_pcr(sym, datos["precio"]) if not skip_opciones else None
+    datos["pw"]  = pcr_data["pw"]  if pcr_data else "—"
+    datos["cw"]  = pcr_data["cw"]  if pcr_data else "—"
+    datos["pcr"] = pcr_data["pcr"] if pcr_data else "—"
+    datos["gex"] = pcr_data["gex"] if pcr_data else "—"
+    todos.append(datos)
 prog.empty()
 
-if resultados:
-    df_out = pd.DataFrame(resultados).reset_index(drop=True)
-    df_out.index = range(1, len(df_out)+1)
-    st.success(f"✅ {len(resultados)} señales VMC encontradas en {len(TICKERS)} tickers")
-    st.dataframe(
-        df_out.style
-            .map(cr,  subset=["RSI"])
-            .map(cj,  subset=["J(KDJ)"])
-            .map(cs,  subset=["P/C","GEX"]),
-        use_container_width=True
-    )
-    st.download_button("⬇️ CSV", df_out.to_csv(index=False).encode(), "vmc_screener.csv", "text/csv")
-else:
-    st.info("Sin señales VMC hoy ni ayer en la watchlist.")
+# Resumen ejecutivo
+n_sob = sum(1 for x in todos if x["sobreventa"])
+n_sop = sum(1 for x in todos if x["soporte"])
+n_bb  = sum(1 for x in todos if x["rebote_bb"])
+n_cr  = sum(1 for x in todos if x["cruce"])
+n_top = sum(1 for x in todos if x["score"] >= 2)
 
-st.markdown('<p class="footer">VMC Cipher B · © vumanchu MPL 2.0 · Solo fines educativos · No es asesoría financiera</p>', unsafe_allow_html=True)
+st.markdown(f'<div style="text-align:center;color:var(--muted);font-size:12px;padding:8px 0 16px;letter-spacing:.05em;">✅ {len(TICKERS)} tickers · {len(todos)} candidatos · <span style="color:#00e5a0;font-weight:700">{n_top} TOP-PICKS (2+ gatillos)</span> · 🟢 {n_sob} sobreventa · 🟡 {n_sop} soporte · 🔵 {n_bb} bollinger · 🟣 {n_cr} cruce</div>', unsafe_allow_html=True)
+
+# ======================================================================
+# TOP PICKS — los que tienen 2+ gatillos disparados
+# ======================================================================
+top_picks = sorted([x for x in todos if x["score"] >= 2], key=lambda x: (-x["score"], x["rsi"]))
+
+if top_picks:
+    st.markdown('<div class="sec sec-os">⭐ TOP PICKS — 2+ GATILLOS COINCIDENTES</div>', unsafe_allow_html=True)
+    st.markdown("""<div class="glosario">
+    <b>Score</b> — cuántos gatillos dispararon (verde = 3+, azul = 2). Mientras más gatillos, más probable el rebote &nbsp;·&nbsp;
+    <b>Gatillos</b> — 🟢SOB sobreventa · 🟡SOP soporte MA · 🔵BB bollinger · 🟣CR cruce KDJ+MACD &nbsp;·&nbsp;
+    Revisa cada uno en Moomoo para evaluar entrada según tu riesgo
+    </div>""", unsafe_allow_html=True)
+    rows = []
+    for x in top_picks:
+        gs = []
+        if x["sobreventa"]: gs.append("🟢SOB")
+        if x["soporte"]:    gs.append("🟡SOP")
+        if x["rebote_bb"]:  gs.append("🔵BB")
+        if x["cruce"]:      gs.append("🟣CR")
+        rows.append({
+            "Ticker": x["sym"], "Score": x["score"], "Gatillos": " ".join(gs),
+            "Precio": x["precio_str"], "RSI": x["rsi_str"], "J(KDJ)": x["j_str"], "ADX": x["adx_str"],
+            "Put Wall": x["pw"], "Call Wall": x["cw"], "P/C": x["pcr"], "GEX": x["gex"],
+        })
+    df_top = pd.DataFrame(rows).reset_index(drop=True); df_top.index = range(1,len(df_top)+1)
+    st.dataframe(df_top.style.map(csc,subset=["Score"]).map(cr,subset=["RSI"]).map(cj,subset=["J(KDJ)"]).map(cs,subset=["P/C","GEX"]), use_container_width=True)
+
+# ======================================================================
+# 4 LISTAS INDIVIDUALES
+# ======================================================================
+def render_seccion(titulo, css, key, glosario):
+    items = sorted([x for x in todos if x[key]], key=lambda x: x["rsi"])
+    st.markdown(f'<div class="sec {css}">{titulo}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="glosario">{glosario}</div>', unsafe_allow_html=True)
+    if not items:
+        st.info("Sin candidatos en esta categoría hoy.")
+        return
+    rows = [{
+        "Ticker": x["sym"], "Precio": x["precio_str"],
+        "RSI": x["rsi_str"], "J(KDJ)": x["j_str"], "ADX": x["adx_str"],
+        "Put Wall": x["pw"], "Call Wall": x["cw"], "P/C": x["pcr"], "GEX": x["gex"],
+    } for x in items]
+    df_ = pd.DataFrame(rows).reset_index(drop=True); df_.index = range(1,len(df_)+1)
+    st.dataframe(df_.style.map(cr,subset=["RSI"]).map(cj,subset=["J(KDJ)"]).map(cs,subset=["P/C","GEX"]), use_container_width=True)
+
+render_seccion(
+    "🟢 SOBREVENTA FRESCA — RSI < 35", "sec-os", "sobreventa",
+    "<b>Criterio</b>: RSI &lt;35 + KDJ girando + cierre sobre mínimo de ayer + volumen activo &nbsp;·&nbsp; <b>Acción</b>: vela de rebote desde sobreventa extrema — alta probabilidad de giro corto"
+)
+render_seccion(
+    "🟡 TOCANDO SOPORTE MA50 / MA200", "sec-mas", "soporte",
+    "<b>Criterio</b>: precio toca MA50 o MA200 desde arriba + KDJ girando + volumen activo &nbsp;·&nbsp; <b>Acción</b>: pullback técnico — entrar con stop bajo la media tocada"
+)
+render_seccion(
+    "🔵 REBOTE BOLLINGER INFERIOR", "sec-bb", "rebote_bb",
+    "<b>Criterio</b>: vela tocó BB_DN ayer y hoy cerró sobre ella + KDJ girando + volumen activo &nbsp;·&nbsp; <b>Acción</b>: reversión clásica de exceso bajista"
+)
+render_seccion(
+    "🟣 CRUCE KDJ + MACD EN ZONA BAJA", "sec-cr", "cruce",
+    "<b>Criterio</b>: K cruza D + MACD gira o cruza al alza + RSI &lt;50 + volumen activo &nbsp;·&nbsp; <b>Acción</b>: cambio de momentum confirmado — entrada anticipada"
+)
+
+st.markdown('<p class="footer">Rebote Screener · 4 gatillos independientes · Solo fines educativos · No es asesoría financiera</p>', unsafe_allow_html=True)
