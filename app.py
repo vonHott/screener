@@ -92,8 +92,12 @@ TICKERS = [
 # © vumanchu — https://www.tradingview.com/script/Msm4SjwI-VuManChu-Cipher-B-Divergences
 # ======================================================================
 def calcular_vmc(df):
+    # WaveTrend Oscillator — fiel al Pine Script de VuManChu (MPL 2.0)
     n1, n2 = 10, 21
-    os2 = -53
+
+    # Umbral de sobreventa adaptado para timeframe diario en acciones
+    # TradingView usa -53 en 4h/crypto — en 1D stocks se relaja a -40
+    os_daily = -40
 
     hlc3 = (df['High'] + df['Low'] + df['Close']) / 3
     esa  = hlc3.ewm(span=n1, adjust=False).mean()
@@ -102,18 +106,20 @@ def calcular_vmc(df):
     wt1  = ci.ewm(span=n2, adjust=False).mean()
     wt2  = wt1.rolling(4).mean()
 
-    # MFI modificado
+    # MFI modificado (money flow)
     mfi = ((df['Close'] - df['Open']) / (df['High'] - df['Low']).replace(0, 1e-8) * 150).rolling(60).mean()
 
-    # Buy dot: wt2 cruza wt1 hacia arriba desde zona sobreventa + MFI positivo
-    cross_up  = (wt2 > wt1) & (wt2.shift(1) <= wt1.shift(1))
-    oversold  = wt2.shift(1) < os2
-    vmc_buy   = cross_up & oversold & (mfi > 0)
+    # BUY DOT: wt2 gira hacia arriba desde zona de sobreventa + MFI positivo
+    # wt2 es el oscilador lento — su giro desde abajo es la señal del circulo verde
+    wt2_giro_up = wt2 > wt2.shift(1)
+    wt2_venia_os = wt2.shift(1) < os_daily
+    vmc_buy = wt2_giro_up & wt2_venia_os & (mfi > 0)
 
-    # Divergencia alcista: precio lower low pero wt2 higher low en sobreventa
-    p_ll  = df['Close'] < df['Close'].rolling(5).min().shift(1)
-    w_hl  = wt2 > wt2.rolling(5).min().shift(1)
-    vmc_div = p_ll & w_hl & (wt2 < os2)
+    # DIVERGENCIA ALCISTA: precio hace nuevo minimo pero wt2 no lo hace
+    # confirmando que la presion bajista se agota
+    p_ll    = df['Close'] < df['Close'].rolling(5).min().shift(1)
+    w_hl    = wt2 > wt2.rolling(5).min().shift(1)
+    vmc_div = p_ll & w_hl & (wt2 < os_daily)
 
     return wt1, wt2, vmc_buy, vmc_div
 
