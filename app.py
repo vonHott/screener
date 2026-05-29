@@ -13,8 +13,8 @@ import warnings
 warnings.filterwarnings('ignore')
 
 st.set_page_config(
-    page_title="Rebote Screener",
-    page_icon="🎯",
+    page_title="Screener CRH",
+    page_icon="🔥",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -102,6 +102,15 @@ TICKERS = [
     "CRCL","RACE","CMCSA",
 ]
 
+# ======================================================================
+# PUT/CALL RATIO 5 SEMANAS
+# ======================================================================
+@st.cache_data(ttl=14400, show_spinner=False)
+def calcular_pcr(ticker_name, precio_actual):
+    try:
+        tk = yf.Ticker(ticker_name)
+        exps = tk.options
+        if not exps: return None
         puts_all, calls_all = [], []
         total_pv = total_cv = total_po = total_co = 0
         for exp in exps[:5]:
@@ -164,83 +173,26 @@ def get_market_data():
     except: pass
     return result, vix, btc_pct, btc_price
 
-
 # ======================================================================
-# FUNDAMENTALES — fair value, target price, P/E, P/B, P/S, ROE, consensus
+# ANALIZAR TICKER — calcula 4 tipos de rebote
 # ======================================================================
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_fundamentales(sym):
-    """Devuelve dict con datos fundamentales del ticker desde yfinance.info"""
+def analizar_ticker(sym):
     try:
-        info = yf.Ticker(sym).info
-        if not info or len(info) < 10:
-            return None
-        return {
-            "target_mean":   info.get("targetMeanPrice"),
-            "target_high":   info.get("targetHighPrice"),
-            "target_low":    info.get("targetLowPrice"),
-            "n_analysts":    info.get("numberOfAnalystOpinions"),
-            "rec_key":       info.get("recommendationKey", ""),
-            "rec_mean":      info.get("recommendationMean"),
-            "pe_ttm":        info.get("trailingPE"),
-            "pe_fwd":        info.get("forwardPE"),
-            "pb":            info.get("priceToBook"),
-            "ps":            info.get("priceToSalesTrailing12Months"),
-            "peg":           info.get("pegRatio"),
-            "roe":           info.get("returnOnEquity"),
-            "margin_op":     info.get("operatingMargins"),
-            "rev_growth":    info.get("revenueGrowth"),
-            "earn_growth":   info.get("earningsGrowth"),
-            "debt_eq":       info.get("debtToEquity"),
-            "div_yield":     info.get("dividendYield"),
-        }
+        df = yf.download(sym, period="1y", progress=False, auto_adjust=True)
+        if df.empty: return None
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+        df = df.dropna(subset=['Close','Volume'])
+        df = df[df['Volume']>0].copy()
+        if len(df) < 200: return None
     except: return None
 
-def calc_percentil_pe(df_precio, pe_actual):
-    """Aproxima percentil P/E actual vs últimos 5 años usando precio histórico.
-    Asume EPS estable. Si pe_actual=None devuelve None."""
-    if pe_actual is None or pe_actual <= 0 or df_precio is None or df_precio.empty:
-        return None
+    # Barra de hoy en tiempo real
     try:
-        # Tomamos últimos 5 años de precio (o lo disponible)
-        precios_5y = df_precio['Close'].tail(1260)  # ~5 años de barras diarias
-        precio_actual = float(precios_5y.iloc[-1])
-        # Ratio P/E_hist = P/E_actual × (precio_hist / precio_actual)
-        # (asumiendo EPS constante; aproximación útil)
-        pe_hist = pe_actual * (precios_5y / precio_actual)
-        # Percentil del P/E actual dentro de la distribución histórica
-        pct = (pe_hist < pe_actual).sum() / len(pe_hist) * 100
-        return round(pct, 0)
-    except: return None
-
-def veredicto(precio_actual, target_mean):
-    """Compara precio actual con target promedio."""
-    if not target_mean or target_mean <= 0: return ("—", "")
-    upside = (target_mean - precio_actual) / precio_actual * 100
-    if upside >= 15:   return (f"🟢 +{upside:.0f}%", "subvalorada")
-    if upside >= 0:    return (f"⚪ +{upside:.0f}%", "justo")
-    if upside >= -10:  return (f"🟡 {upside:.0f}%",  "cerca techo")
-    return (f"🔴 {upside:.0f}%", "sobrevalorada")
-
-def consenso(rec_mean, n_analysts):
-    """Convierte recommendationMean (1-5) a texto + emoji."""
-    if rec_mean is None or n_analysts is None or n_analysts == 0: return "—"
-    if rec_mean <= 1.5: tag = "🟢 Strong Buy"
-    elif rec_mean <= 2.5: tag = "🟢 Buy"
-    elif rec_mean <= 3.5: tag = "⚪ Hold"
-    elif rec_mean <= 4.5: tag = "🔴 Sell"
-    else: tag = "🔴 Strong Sell"
-    return f"{tag} ({int(n_analysts)})"
-
-# ======================================================================
-# ANALIZAR TICKER — calcula 4 tipos de rebote (recibe df ya descargado)
-# ======================================================================
-def analizar_ticker(sym, df):
-    if df is None or df.empty or len(df) < 200:
-        return None
-    df = df.dropna(subset=['Close','Volume'])
-    df = df[df['Volume']>0].copy()
-    if len(df) < 200: return None
+        dfh = yf.download(sym, period="5d", interval="1d", progress=False, auto_adjust=True)
+        if isinstance(dfh.columns, pd.MultiIndex): dfh.columns = dfh.columns.get_level_values(0)
+        if not dfh.empty and dfh.index[-1].date() > df.index[-1].date():
+            df = pd.concat([df, dfh.iloc[[-1]][~dfh.iloc[[-1]].index.isin(df.index)]])
+    except: pass
 
     # ── Indicadores ──
     df['MA20']  = df['Close'].ewm(span=20,adjust=False).mean()
@@ -392,10 +344,10 @@ def csc(v):
 st.markdown("""
 <div class="header">
   <div>
-    <h1>🎯 Rebote <span>Screener</span></h1>
+    <h1>🔥 Rebote  <span>Screener 🔥 </span></h1>
     <p>4 GATILLOS DE REBOTE · SOBREVENTA · SOPORTE MA · BOLLINGER · CRUCE KDJ+MACD</p>
   </div>
-  <div class="badge">LIVE</div>
+  <div class="badge">WIP</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -428,103 +380,22 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ======================================================================
-# ESCANEO AUTOMATICO — descarga batch + threading para máxima velocidad
+# ESCANEO AUTOMATICO
 # ======================================================================
-from concurrent.futures import ThreadPoolExecutor
-
-# ── FASE 1: descarga TODOS los tickers en UNA sola request batch ──
-prog = st.progress(0, text=f"Descargando {len(TICKERS)} tickers en batch...")
-
-@st.cache_data(ttl=300, show_spinner=False)
-def descargar_batch(tickers_tuple):
-    """yfinance permite descargar muchos tickers en una sola request."""
-    df_all = yf.download(
-        list(tickers_tuple),
-        period="1y",
-        group_by="ticker",
-        progress=False,
-        auto_adjust=True,
-        threads=True,
-    )
-    return df_all
-
-df_batch = descargar_batch(tuple(TICKERS))
-prog.progress(40, text="Calculando indicadores...")
-
-# ── FASE 2: analizar cada ticker con su slice del batch ──
+prog = st.progress(0, text="Escaneando rebotes...")
 todos = []
-def procesar(sym):
-    try:
-        if isinstance(df_batch.columns, pd.MultiIndex):
-            df_sym = df_batch[sym].copy() if sym in df_batch.columns.levels[0] else None
-        else:
-            df_sym = df_batch.copy()
-        return analizar_ticker(sym, df_sym)
-    except:
-        return None
 
-resultados = []
 for idx, sym in enumerate(TICKERS):
-    if idx % 30 == 0:
-        prog.progress(40 + int(idx/len(TICKERS)*30), text=f"Indicadores · {idx}/{len(TICKERS)}")
-    datos = procesar(sym)
-    if datos is not None:
-        datos["sym_original"] = sym
-        resultados.append(datos)
-
-# ── FASE 3: Put/Call en paralelo para los candidatos ──
-prog.progress(70, text=f"Put/Call ratio para {len(resultados)} candidatos...")
-
-def fetch_fund(item):
-    sym = item["sym_original"]
-    skip = any(x in sym for x in ['-USD','-F','=X','=F','.DE','.SW','.HK'])
-
-    if skip:
-        item["target"] = item["consenso"] = item["pe_ttm"] = item["pe_fwd"] = "—"
-        item["pb"] = item["ps"] = item["upside"] = item["pe_pctl"] = "—"
-        return item
-
-    fund = fetch_fundamentales(sym)
-    if not fund:
-        item["target"] = item["consenso"] = item["pe_ttm"] = item["pe_fwd"] = "—"
-        item["pb"] = item["ps"] = item["upside"] = item["pe_pctl"] = "—"
-        return item
-
-    # Target a 12 meses (yfinance targetMeanPrice = consenso 12M analistas)
-    tm = fund.get("target_mean")
-    item["target"] = f"${tm:.0f}" if tm else "—"
-
-    # Upside vs Target 12M
-    ver, _ = veredicto(item["precio"], tm)
-    item["upside"] = ver
-
-    # Consenso analistas
-    item["consenso"] = consenso(fund.get("rec_mean"), fund.get("n_analysts"))
-
-    # Ratios
-    pe = fund.get("pe_ttm")
-    item["pe_ttm"] = f"{pe:.1f}" if pe and pe > 0 else "—"
-    pef = fund.get("pe_fwd")
-    item["pe_fwd"] = f"{pef:.1f}" if pef and pef > 0 else "—"
-    pb = fund.get("pb")
-    item["pb"] = f"{pb:.1f}" if pb and pb > 0 else "—"
-    ps = fund.get("ps")
-    item["ps"] = f"{ps:.1f}" if ps and ps > 0 else "—"
-
-    # Percentil P/E 5Y
-    try:
-        df_sym = df_batch[sym] if isinstance(df_batch.columns, pd.MultiIndex) else df_batch
-        pct = calc_percentil_pe(df_sym, fund.get("pe_ttm"))
-        item["pe_pctl"] = f"{int(pct)}%" if pct is not None else "—"
-    except:
-        item["pe_pctl"] = "—"
-
-    return item
-
-with ThreadPoolExecutor(max_workers=12) as executor:
-    todos = list(executor.map(fetch_fund, resultados))
-
-prog.progress(100, text="¡Listo!")
+    prog.progress(int((idx+1)/len(TICKERS)*100), text=f"{sym}  ({idx+1}/{len(TICKERS)})")
+    datos = analizar_ticker(sym)
+    if datos is None: continue
+    skip_opciones = any(x in sym for x in ['-USD','-F','=X','=F','.DE','.SW','.HK'])
+    pcr_data = calcular_pcr(sym, datos["precio"]) if not skip_opciones else None
+    datos["pw"]  = pcr_data["pw"]  if pcr_data else "—"
+    datos["cw"]  = pcr_data["cw"]  if pcr_data else "—"
+    datos["pcr"] = pcr_data["pcr"] if pcr_data else "—"
+    datos["gex"] = pcr_data["gex"] if pcr_data else "—"
+    todos.append(datos)
 prog.empty()
 
 # Resumen ejecutivo
@@ -544,13 +415,9 @@ top_picks = sorted([x for x in todos if x["score"] >= 2], key=lambda x: (-x["sco
 if top_picks:
     st.markdown('<div class="sec sec-os">⭐ TOP PICKS — 2+ GATILLOS COINCIDENTES</div>', unsafe_allow_html=True)
     st.markdown("""<div class="glosario">
-    <b>Score</b> técnico — gatillos disparados (verde 3+, azul 2) &nbsp;·&nbsp;
+    <b>Score</b> — cuántos gatillos dispararon (verde = 3+, azul = 2). Mientras más gatillos, más probable el rebote &nbsp;·&nbsp;
     <b>Gatillos</b> — 🟢SOB sobreventa · 🟡SOP soporte MA · 🔵BB bollinger · 🟣CR cruce KDJ+MACD &nbsp;·&nbsp;
-    <b>P/E %5A</b> — percentil del P/E actual vs últimos 5 años (bajo = barato históricamente) &nbsp;·&nbsp;
-    <b>Target 12M</b> — precio objetivo a 12 meses, promedio de analistas (yfinance targetMeanPrice) &nbsp;·&nbsp;
-    <b>Upside</b> — % entre precio actual y Target 12M: 🟢 ≥+15% · ⚪ 0/+15% · 🟡 -10/0% · 🔴 &lt;-10% &nbsp;·&nbsp;
-    <b>P/E fwd</b> — P/E proyectado próximos 12M &nbsp;·&nbsp;
-    <b>Consenso</b> — rating analistas (n) Strong Buy / Buy / Hold / Sell
+    Revisa cada uno en Moomoo para evaluar entrada según tu riesgo
     </div>""", unsafe_allow_html=True)
     rows = []
     for x in top_picks:
@@ -561,15 +428,11 @@ if top_picks:
         if x["cruce"]:      gs.append("🟣CR")
         rows.append({
             "Ticker": x["sym"], "Score": x["score"], "Gatillos": " ".join(gs),
-            "Precio": x["precio_str"], "P/E %5A": x.get("pe_pctl","—"),
-            "Target 12M": x.get("target","—"), "Upside": x.get("upside","—"),
-            "RSI": x["rsi_str"], "J(KDJ)": x["j_str"], "ADX": x["adx_str"],
-            "P/E": x.get("pe_ttm","—"), "P/E fwd": x.get("pe_fwd","—"),
-            "P/B": x.get("pb","—"), "P/S": x.get("ps","—"),
-            "Consenso": x.get("consenso","—"),
+            "Precio": x["precio_str"], "RSI": x["rsi_str"], "J(KDJ)": x["j_str"], "ADX": x["adx_str"],
+            "Put Wall": x["pw"], "Call Wall": x["cw"], "P/C": x["pcr"], "GEX": x["gex"],
         })
     df_top = pd.DataFrame(rows).reset_index(drop=True); df_top.index = range(1,len(df_top)+1)
-    st.dataframe(df_top.style.map(csc,subset=["Score"]).map(cr,subset=["RSI"]).map(cj,subset=["J(KDJ)"]).map(cs,subset=["Upside","Consenso"]), use_container_width=True)
+    st.dataframe(df_top.style.map(csc,subset=["Score"]).map(cr,subset=["RSI"]).map(cj,subset=["J(KDJ)"]).map(cs,subset=["P/C","GEX"]), use_container_width=True)
 
 # ======================================================================
 # 4 LISTAS INDIVIDUALES
@@ -582,30 +445,28 @@ def render_seccion(titulo, css, key, glosario):
         st.info("Sin candidatos en esta categoría hoy.")
         return
     rows = [{
-        "Ticker": x["sym"], "Precio": x["precio_str"], "P/E %5A": x.get("pe_pctl","—"),
-        "Target 12M": x.get("target","—"), "Upside": x.get("upside","—"),
+        "Ticker": x["sym"], "Precio": x["precio_str"],
         "RSI": x["rsi_str"], "J(KDJ)": x["j_str"], "ADX": x["adx_str"],
-        "P/E": x.get("pe_ttm","—"), "P/B": x.get("pb","—"), "P/S": x.get("ps","—"),
-        "Consenso": x.get("consenso","—"),
+        "Put Wall": x["pw"], "Call Wall": x["cw"], "P/C": x["pcr"], "GEX": x["gex"],
     } for x in items]
     df_ = pd.DataFrame(rows).reset_index(drop=True); df_.index = range(1,len(df_)+1)
-    st.dataframe(df_.style.map(cr,subset=["RSI"]).map(cj,subset=["J(KDJ)"]).map(cs,subset=["Upside","Consenso"]), use_container_width=True)
+    st.dataframe(df_.style.map(cr,subset=["RSI"]).map(cj,subset=["J(KDJ)"]).map(cs,subset=["P/C","GEX"]), use_container_width=True)
 
 render_seccion(
     "🟢 SOBREVENTA FRESCA — RSI < 35", "sec-os", "sobreventa",
-    "<b>Criterio</b>: RSI &lt;35 + KDJ girando + cierre sobre mínimo de ayer + volumen activo &nbsp;·&nbsp; <b>Target 12M</b>: precio objetivo de analistas &nbsp;·&nbsp; <b>Upside</b>: % vs Target &nbsp;·&nbsp; <b>P/E %5A</b>: percentil P/E últimos 5 años"
+    "<b>Criterio</b>: RSI &lt;35 + KDJ girando + cierre sobre mínimo de ayer + volumen activo &nbsp;·&nbsp; <b>Acción</b>: vela de rebote desde sobreventa extrema — alta probabilidad de giro corto"
 )
 render_seccion(
     "🟡 TOCANDO SOPORTE MA50 / MA200", "sec-mas", "soporte",
-    "<b>Criterio</b>: precio toca MA50 o MA200 desde arriba + KDJ girando + volumen activo &nbsp;·&nbsp; <b>Target 12M</b>: precio objetivo de analistas &nbsp;·&nbsp; <b>Upside</b>: % vs Target &nbsp;·&nbsp; <b>P/E %5A</b>: percentil P/E últimos 5 años"
+    "<b>Criterio</b>: precio toca MA50 o MA200 desde arriba + KDJ girando + volumen activo &nbsp;·&nbsp; <b>Acción</b>: pullback técnico — entrar con stop bajo la media tocada"
 )
 render_seccion(
     "🔵 REBOTE BOLLINGER INFERIOR", "sec-bb", "rebote_bb",
-    "<b>Criterio</b>: vela tocó BB_DN ayer y hoy cerró sobre ella + KDJ girando + volumen activo &nbsp;·&nbsp; <b>Target 12M</b>: precio objetivo de analistas &nbsp;·&nbsp; <b>Upside</b>: % vs Target &nbsp;·&nbsp; <b>P/E %5A</b>: percentil P/E últimos 5 años"
+    "<b>Criterio</b>: vela tocó BB_DN ayer y hoy cerró sobre ella + KDJ girando + volumen activo &nbsp;·&nbsp; <b>Acción</b>: reversión clásica de exceso bajista"
 )
 render_seccion(
     "🟣 CRUCE KDJ + MACD EN ZONA BAJA", "sec-cr", "cruce",
-    "<b>Criterio</b>: K cruza D + MACD gira o cruza al alza + RSI &lt;50 + volumen activo &nbsp;·&nbsp; <b>Target 12M</b>: precio objetivo de analistas &nbsp;·&nbsp; <b>Upside</b>: % vs Target &nbsp;·&nbsp; <b>P/E %5A</b>: percentil P/E últimos 5 años"
+    "<b>Criterio</b>: K cruza D + MACD gira o cruza al alza + RSI &lt;50 + volumen activo &nbsp;·&nbsp; <b>Acción</b>: cambio de momentum confirmado — entrada anticipada"
 )
 
-st.markdown('<p class="footer">Rebote Screener · 4 gatillos independientes · Solo fines educativos · No es asesoría financiera</p>', unsafe_allow_html=True)
+st.markdown('<p class="footer"> Solo fines educativos · No es asesoría financiera</p>', unsafe_allow_html=True)
