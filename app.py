@@ -9,6 +9,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import math
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 warnings.filterwarnings('ignore')
@@ -120,16 +121,12 @@ def fetch_fundamentales(sym):
             "rec_mean":      info.get("recommendationMean"),
             "pe_ttm":        info.get("trailingPE"),
             "pe_fwd":        info.get("forwardPE"),
-            "pb":            info.get("priceToBook"),
-            "ps":            info.get("priceToSalesTrailing12Months"),
+            "eps_ttm":       info.get("trailingEps"),
+            "book_value":    info.get("bookValue"),
         }
     except:
         return None
 
-def calc_percentil_pe(df_precio, pe_actual):
-    """Percentil del P/E actual vs ultimos 5 anios (aprox via precio, EPS estable)."""
-    if pe_actual is None or pe_actual <= 0 or df_precio is None or df_precio.empty:
-        return None
     try:
         precios_5y = df_precio['Close'].tail(1260)
         precio_actual = float(precios_5y.iloc[-1])
@@ -150,6 +147,23 @@ def calc_upside(precio_actual, target_mean):
     elif up >= -10: txt = f"🟡 {up:.0f}%"
     else:          txt = f"🔴 {up:.0f}%"
     return (txt, up, bajo_target)
+
+
+def calc_graham(eps_ttm, book_value, precio_actual):
+    """Graham Number = sqrt(22.5 × EPS × BVPS). Devuelve (texto_fv, upside_txt, upside_raw).
+    Solo válido con EPS y Book Value positivos."""
+    if not eps_ttm or not book_value or eps_ttm <= 0 or book_value <= 0:
+        return ("—", "—", None)
+    try:
+        fv = math.sqrt(22.5 * eps_ttm * book_value)
+        up = (fv - precio_actual) / precio_actual * 100
+        if up >= 15:   txt = f"🟢 +{up:.0f}%"
+        elif up >= 0:  txt = f"⚪ +{up:.0f}%"
+        elif up >= -15: txt = f"🟡 {up:.0f}%"
+        else:          txt = f"🔴 {up:.0f}%"
+        return (f"${fv:.0f}", txt, up)
+    except:
+        return ("—", "—", None)
 
 def consenso(rec_mean, n_analysts):
     """recommendationMean (1-5) a texto + emoji + n analistas."""
@@ -339,13 +353,6 @@ def cs(v):
     if "🔴" in s: return "color:#ff4d6d;font-weight:600"
     if "🟡" in s: return "color:#ffd166;font-weight:600"
     return "color:#4a5568"
-def cpctl(v):
-    try:
-        n=float(str(v).replace('%',''))
-        if n<25: return "color:#00e5a0;font-weight:600"
-        if n>75: return "color:#ff4d6d;font-weight:600"
-    except: pass
-    return "color:#4a5568"
 def csc(v):
     try:
         n = int(v)
@@ -436,9 +443,10 @@ def fetch_fund(item):
     skip = any(x in sym for x in ['-USD','-F','=X','=F','.DE','.SW','.HK'])
     # defaults
     item["target"]=item["consenso"]=item["pe_ttm"]=item["pe_fwd"]="—"
-    item["pb"]=item["ps"]=item["upside"]=item["pe_pctl"]="—"
-    item["bajo_target"]=False
-    item["bajo_fv"]=False
+    item["upside"]="—"
+    item["graham"]="—"
+    item["graham_up"]="—"
+    item["bonus_fv"]=False
     if skip:
         return item
     fund = fetch_fundamentales(sym)
@@ -447,9 +455,8 @@ def fetch_fund(item):
 
     tm = fund.get("target_mean")
     item["target"] = f"${tm:.0f}" if tm else "—"
-    up_txt, up_raw, bajo_t = calc_upside(item["precio"], tm)
+    up_txt, target_up_raw, bajo_t = calc_upside(item["precio"], tm)
     item["upside"] = up_txt
-    item["bajo_target"] = bajo_t
 
     item["consenso"] = consenso(fund.get("rec_mean"), fund.get("n_analysts"))
 
@@ -457,37 +464,22 @@ def fetch_fund(item):
     item["pe_ttm"] = f"{pe:.1f}" if pe and pe > 0 else "—"
     pef = fund.get("pe_fwd")
     item["pe_fwd"] = f"{pef:.1f}" if pef and pef > 0 else "—"
-    pb = fund.get("pb")
-    item["pb"] = f"{pb:.1f}" if pb and pb > 0 else "—"
-    ps = fund.get("ps")
-    item["ps"] = f"{ps:.1f}" if ps and ps > 0 else "—"
 
-    # Percentil P/E 5A
-    try:
-        df_sym = df_batch[sym] if isinstance(df_batch.columns, pd.MultiIndex) else df_batch
-        pct = calc_percentil_pe(df_sym, fund.get("pe_ttm"))
-        item["pe_pctl"] = f"{int(pct)}%" if pct is not None else "—"
-        # bajo FV proxy: P/E en percentil bajo (<35%) = barato historicamente
-        item["bajo_fv"] = (pct is not None and pct < 35)
-    except:
-        pass
+    # Graham Number (fair value defensivo)
+    g_fv, g_txt, graham_up_raw = calc_graham(fund.get("eps_ttm"), fund.get("book_value"), item["precio"])
+    item["graham"] = g_fv
+    item["graham_up"] = g_txt
 
-    # ── SCORE EXTRA: +1 si esta bajo Target y bajo FV (P/E barato) ──
-    extra = 0
-    if item["bajo_target"]: extra += 1
-    if item["bajo_fv"]:     extra += 1
-    item["score"] = item["score"] + extra
-    item["score_extra"] = extra
+    # ── BONUS +1: Graham Y Target ambos >= +15% (doble confirmacion de ganga) ──
+    if (graham_up_raw is not None and graham_up_raw >= 15 and
+        target_up_raw is not None and target_up_raw >= 15):
+        item["score"] = item["score"] + 1
+        item["bonus_fv"] = True
 
     return item
 
 with ThreadPoolExecutor(max_workers=12) as executor:
     todos = list(executor.map(fetch_fund, resultados))
-
-# asegurar score_extra en los que saltaron fundamentales
-for x in todos:
-    if "score_extra" not in x:
-        x["score_extra"] = 0
 
 prog.progress(100, text="¡Listo!")
 prog.empty()
@@ -509,12 +501,14 @@ top_picks = sorted([x for x in todos if x["score"] >= 2], key=lambda x: (-x["sco
 if top_picks:
     st.markdown('<div class="sec sec-os">⭐ TOP PICKS — MEJOR SCORE (TÉCNICO + FUNDAMENTAL)</div>', unsafe_allow_html=True)
     st.markdown("""<div class="glosario">
-    <b>Score</b> — gatillos técnicos + bonus fundamental (verde 4+, azul 3, morado 2) &nbsp;·&nbsp;
-    <b>+FV</b> en gatillos = bonus por estar bajo Target Y con P/E barato vs 5 años &nbsp;·&nbsp;
+    <b>Score</b> — gatillos técnicos + bonus valor (verde 4+, azul 3, morado 2) &nbsp;·&nbsp;
     <b>Gatillos</b> — 🟢SOB sobreventa · 🟡SOP soporte EMA50/200/325 · 🔵BB bollinger · 🟣CR cruce KDJ+MACD &nbsp;·&nbsp;
-    <b>P/E %5A</b> — percentil del P/E actual vs últimos 5 años (bajo = barato) &nbsp;·&nbsp;
+    <b>💎VALOR</b> — bonus +1: Graham FV Y Target 12M ambos ≥+15% (barata por ambas valoraciones) &nbsp;·&nbsp;
+    <b>Graham FV</b> — fair value de Graham √(22.5×EPS×BookValue), valor máximo defensivo &nbsp;·&nbsp;
+    <b>vs Graham</b> — % entre precio y Graham FV (🟢 barato bajo Graham) &nbsp;·&nbsp;
     <b>Target 12M</b> — precio objetivo a 12 meses (consenso analistas) &nbsp;·&nbsp;
     <b>Upside</b> — % entre precio y Target 12M: 🟢 ≥+15% · ⚪ 0/+15% · 🟡 -10/0% · 🔴 &lt;-10% &nbsp;·&nbsp;
+    <b>P/E fwd</b> — P/E proyectado próximos 12M &nbsp;·&nbsp;
     <b>Consenso</b> — rating analistas (n)
     </div>""", unsafe_allow_html=True)
     rows = []
@@ -524,18 +518,18 @@ if top_picks:
         if x["soporte"]:    gs.append("🟡SOP")
         if x["rebote_bb"]:  gs.append("🔵BB")
         if x["cruce"]:      gs.append("🟣CR")
-        if x.get("score_extra",0) > 0: gs.append(f"💰+FV×{x['score_extra']}")
+        if x.get("bonus_fv"): gs.append("💎VALOR")
         rows.append({
             "Ticker": x["sym"], "Score": x["score"], "Gatillos": " ".join(gs),
-            "Precio": x["precio_str"], "P/E %5A": x.get("pe_pctl","—"),
+            "Precio": x["precio_str"],
+            "Graham FV": x.get("graham","—"), "vs Graham": x.get("graham_up","—"),
             "Target 12M": x.get("target","—"), "Upside": x.get("upside","—"),
             "RSI": x["rsi_str"], "J(KDJ)": x["j_str"], "ADX": x["adx_str"],
             "P/E": x.get("pe_ttm","—"), "P/E fwd": x.get("pe_fwd","—"),
-            "P/B": x.get("pb","—"), "P/S": x.get("ps","—"),
             "Consenso": x.get("consenso","—"),
         })
     df_top = pd.DataFrame(rows).reset_index(drop=True); df_top.index = range(1,len(df_top)+1)
-    st.dataframe(df_top.style.map(csc,subset=["Score"]).map(cpctl,subset=["P/E %5A"]).map(cr,subset=["RSI"]).map(cj,subset=["J(KDJ)"]).map(cs,subset=["Upside","Consenso"]), use_container_width=True)
+    st.dataframe(df_top.style.map(csc,subset=["Score"]).map(cr,subset=["RSI"]).map(cj,subset=["J(KDJ)"]).map(cs,subset=["Upside","vs Graham","Consenso"]), use_container_width=True)
 
 # ======================================================================
 # 4 LISTAS INDIVIDUALES
@@ -548,17 +542,17 @@ def render_seccion(titulo, css, key, glosario):
         st.info("Sin candidatos en esta categoría hoy.")
         return
     rows = [{
-        "Ticker": x["sym"], "Precio": x["precio_str"], "P/E %5A": x.get("pe_pctl","—"),
+        "Ticker": x["sym"], "Precio": x["precio_str"],
+        "Graham FV": x.get("graham","—"), "vs Graham": x.get("graham_up","—"),
         "Target 12M": x.get("target","—"), "Upside": x.get("upside","—"),
         "RSI": x["rsi_str"], "J(KDJ)": x["j_str"], "ADX": x["adx_str"],
         "P/E": x.get("pe_ttm","—"), "P/E fwd": x.get("pe_fwd","—"),
-        "P/B": x.get("pb","—"), "P/S": x.get("ps","—"),
         "Consenso": x.get("consenso","—"),
     } for x in items]
     df_ = pd.DataFrame(rows).reset_index(drop=True); df_.index = range(1,len(df_)+1)
-    st.dataframe(df_.style.map(cpctl,subset=["P/E %5A"]).map(cr,subset=["RSI"]).map(cj,subset=["J(KDJ)"]).map(cs,subset=["Upside","Consenso"]), use_container_width=True)
+    st.dataframe(df_.style.map(cr,subset=["RSI"]).map(cj,subset=["J(KDJ)"]).map(cs,subset=["Upside","vs Graham","Consenso"]), use_container_width=True)
 
-GLOS_FUND = "<b>P/E %5A</b>: percentil P/E vs 5 años (bajo=barato) &nbsp;·&nbsp; <b>Target 12M</b>: objetivo analistas &nbsp;·&nbsp; <b>Upside</b>: % vs Target"
+GLOS_FUND = "<b>Graham FV</b>: √(22.5×EPS×BookValue) fair value defensivo &nbsp;·&nbsp; <b>vs Graham</b>: % vs Graham &nbsp;·&nbsp; <b>Target 12M</b>: objetivo analistas &nbsp;·&nbsp; <b>Upside</b>: % vs Target"
 
 render_seccion(
     "🟢 SOBREVENTA FRESCA — RSI < 35", "sec-os", "sobreventa",
