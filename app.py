@@ -109,10 +109,18 @@ TICKERS = [
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_fundamentales(sym):
     """Datos fundamentales del ticker desde yfinance.info"""
+    import time
+    for intento in range(2):
+        try:
+            info = yf.Ticker(sym).info
+            if info and len(info) >= 10:
+                break
+        except:
+            pass
+        time.sleep(0.5)
+    else:
+        return None
     try:
-        info = yf.Ticker(sym).info
-        if not info or len(info) < 10:
-            return None
         return {
             "target_mean":   info.get("targetMeanPrice"),
             "target_high":   info.get("targetHighPrice"),
@@ -124,15 +132,6 @@ def fetch_fundamentales(sym):
             "eps_ttm":       info.get("trailingEps"),
             "book_value":    info.get("bookValue"),
         }
-    except:
-        return None
-
-    try:
-        precios_5y = df_precio['Close'].tail(1260)
-        precio_actual = float(precios_5y.iloc[-1])
-        pe_hist = pe_actual * (precios_5y / precio_actual)
-        pct = (pe_hist < pe_actual).sum() / len(pe_hist) * 100
-        return round(pct, 0)
     except:
         return None
 
@@ -478,7 +477,7 @@ def fetch_fund(item):
 
     return item
 
-with ThreadPoolExecutor(max_workers=12) as executor:
+with ThreadPoolExecutor(max_workers=6) as executor:
     todos = list(executor.map(fetch_fund, resultados))
 
 prog.progress(100, text="¡Listo!")
