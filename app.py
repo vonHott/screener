@@ -120,7 +120,9 @@ def fetch_fundamentales(sym):
             "pe_ttm":        info.get("trailingPE"),
             "pe_fwd":        info.get("forwardPE"),
             "eps_ttm":       info.get("trailingEps"),
+            "fwd_eps":       info.get("forwardEps"),
             "book_value":    info.get("bookValue"),
+            "growth":        info.get("earningsGrowth"),
         }
     except:
         return None
@@ -138,11 +140,45 @@ def calc_upside(precio_actual, target_mean):
     return (txt, up, bajo_target)
 
 
-def calc_graham(eps_ttm, book_value, precio_actual):
-    """Graham Number = sqrt(22.5 × EPS × BVPS). Devuelve (texto_fv, upside_txt, upside_raw).
-    Solo válido con EPS y Book Value positivos."""
-    if not eps_ttm or not book_value or eps_ttm <= 0 or book_value <= 0:
+def calc_fair_value(fund, pe_hist, precio_actual):
+    """FV promedio de 3 modelos: Graham + Forward P/E + Crecimiento.
+    Devuelve (texto_fv, upside_txt, upside_raw)."""
+    eps   = fund.get("eps_ttm")
+    bv    = fund.get("book_value")
+    feps  = fund.get("fwd_eps")
+    g     = fund.get("growth")
+
+    modelos = []
+
+    # Modelo 1: Graham √(22.5×EPS×BV)
+    if eps and bv and eps > 0 and bv > 0:
+        modelos.append(math.sqrt(22.5 * eps * bv))
+
+    # P/E histórico saneado (rango 8-40 para evitar extremos)
+    pe_ok = None
+    if pe_hist and pe_hist > 0:
+        pe_ok = max(8, min(pe_hist, 40))
+
+    # Modelo 2: Forward EPS × P/E histórico propio
+    if feps and feps > 0 and pe_ok:
+        modelos.append(feps * pe_ok)
+
+    # Modelo 3: EPS proyectado 5A con crecimiento, descontado al 10%
+    if eps and eps > 0 and pe_ok:
+        gr = max(-0.05, min(g if g else 0.08, 0.25))
+        eps_fut = eps * (1 + gr) ** 5
+        modelos.append((eps_fut * pe_ok) / (1.10 ** 5))
+
+    if not modelos:
         return ("—", "—", None)
+
+    fv = sum(modelos) / len(modelos)
+    up = (fv - precio_actual) / precio_actual * 100
+    if up >= 15:   txt = f"🟢 +{up:.0f}%"
+    elif up >= 0:  txt = f"⚪ +{up:.0f}%"
+    elif up >= -15: txt = f"🟡 {up:.0f}%"
+    else:          txt = f"🔴 {up:.0f}%"
+    return (f"${fv:.0f}", txt, up)
     try:
         fv = math.sqrt(22.5 * eps_ttm * book_value)
         up = (fv - precio_actual) / precio_actual * 100
@@ -433,8 +469,8 @@ def fetch_fund(item):
     # defaults
     item["target"]=item["consenso"]=item["pe_ttm"]=item["pe_fwd"]="—"
     item["upside"]="—"
-    item["graham"]="—"
-    item["graham_up"]="—"
+    item["fv"]="—"
+    item["fv_up"]="—"
     item["bonus_fv"]=False
     if skip:
         return item
@@ -454,13 +490,14 @@ def fetch_fund(item):
     pef = fund.get("pe_fwd")
     item["pe_fwd"] = f"{pef:.1f}" if pef and pef > 0 else "—"
 
-    # Graham Number (fair value defensivo)
-    g_fv, g_txt, graham_up_raw = calc_graham(fund.get("eps_ttm"), fund.get("book_value"), item["precio"])
-    item["graham"] = g_fv
-    item["graham_up"] = g_txt
+    # Fair Value promedio de 3 modelos (Graham + Fwd P/E + Crecimiento)
+    pe_hist_raw = fund.get("pe_ttm")
+    fv_txt, fv_up_txt, fv_up_raw = calc_fair_value(fund, pe_hist_raw, item["precio"])
+    item["fv"] = fv_txt
+    item["fv_up"] = fv_up_txt
 
-    # ── BONUS +1: Graham Y Target ambos >= +15% (doble confirmacion de ganga) ──
-    if (graham_up_raw is not None and graham_up_raw >= 15 and
+    # ── BONUS +1: FV Y Target ambos >= +15% (doble confirmacion de ganga) ──
+    if (fv_up_raw is not None and fv_up_raw >= 15 and
         target_up_raw is not None and target_up_raw >= 15):
         item["score"] = item["score"] + 1
         item["bonus_fv"] = True
@@ -492,9 +529,9 @@ if top_picks:
     st.markdown("""<div class="glosario">
     <b>Score</b> — gatillos técnicos + bonus valor (verde 4+, azul 3, morado 2) &nbsp;·&nbsp;
     <b>Gatillos</b> — 🟢SOB sobreventa · 🟡SOP soporte EMA50/200/325 · 🔵BB bollinger · 🟣CR cruce KDJ+MACD &nbsp;·&nbsp;
-    <b>💎VALOR</b> — bonus +1: Graham FV Y Target 12M ambos ≥+15% (barata por ambas valoraciones) &nbsp;·&nbsp;
-    <b>Graham FV</b> — fair value de Graham √(22.5×EPS×BookValue), valor máximo defensivo &nbsp;·&nbsp;
-    <b>vs Graham</b> — % entre precio y Graham FV (🟢 barato bajo Graham) &nbsp;·&nbsp;
+    <b>💎VALOR</b> — bonus +1: Fair Value Y Target 12M ambos ≥+15% (barata por ambas valoraciones) &nbsp;·&nbsp;
+    <b>Fair Value</b> — promedio de 3 modelos: Graham + Forward P/E + Crecimiento proyectado &nbsp;·&nbsp;
+    <b>vs FV</b> — % entre precio y Fair Value (🟢 barato bajo FV) &nbsp;·&nbsp;
     <b>Target 12M</b> — precio objetivo a 12 meses (consenso analistas) &nbsp;·&nbsp;
     <b>Upside</b> — % entre precio y Target 12M: 🟢 ≥+15% · ⚪ 0/+15% · 🟡 -10/0% · 🔴 &lt;-10% &nbsp;·&nbsp;
     <b>P/E fwd</b> — P/E proyectado próximos 12M &nbsp;·&nbsp;
@@ -511,14 +548,14 @@ if top_picks:
         rows.append({
             "Ticker": x["sym"], "Score": x["score"], "Gatillos": " ".join(gs),
             "Precio": x["precio_str"],
-            "Graham FV": x.get("graham","—"), "vs Graham": x.get("graham_up","—"),
+            "Fair Value": x.get("fv","—"), "vs FV": x.get("fv_up","—"),
             "Target 12M": x.get("target","—"), "Upside": x.get("upside","—"),
             "RSI": x["rsi_str"], "J(KDJ)": x["j_str"], "ADX": x["adx_str"],
             "P/E": x.get("pe_ttm","—"), "P/E fwd": x.get("pe_fwd","—"),
             "Consenso": x.get("consenso","—"),
         })
     df_top = pd.DataFrame(rows).reset_index(drop=True); df_top.index = range(1,len(df_top)+1)
-    st.dataframe(df_top.style.map(csc,subset=["Score"]).map(cr,subset=["RSI"]).map(cj,subset=["J(KDJ)"]).map(cs,subset=["Upside","vs Graham","Consenso"]), use_container_width=True)
+    st.dataframe(df_top.style.map(csc,subset=["Score"]).map(cr,subset=["RSI"]).map(cj,subset=["J(KDJ)"]).map(cs,subset=["Upside","vs FV","Consenso"]), use_container_width=True)
 
 # ======================================================================
 # 4 LISTAS INDIVIDUALES
@@ -532,16 +569,16 @@ def render_seccion(titulo, css, key, glosario):
         return
     rows = [{
         "Ticker": x["sym"], "Precio": x["precio_str"],
-        "Graham FV": x.get("graham","—"), "vs Graham": x.get("graham_up","—"),
+        "Fair Value": x.get("fv","—"), "vs FV": x.get("fv_up","—"),
         "Target 12M": x.get("target","—"), "Upside": x.get("upside","—"),
         "RSI": x["rsi_str"], "J(KDJ)": x["j_str"], "ADX": x["adx_str"],
         "P/E": x.get("pe_ttm","—"), "P/E fwd": x.get("pe_fwd","—"),
         "Consenso": x.get("consenso","—"),
     } for x in items]
     df_ = pd.DataFrame(rows).reset_index(drop=True); df_.index = range(1,len(df_)+1)
-    st.dataframe(df_.style.map(cr,subset=["RSI"]).map(cj,subset=["J(KDJ)"]).map(cs,subset=["Upside","vs Graham","Consenso"]), use_container_width=True)
+    st.dataframe(df_.style.map(cr,subset=["RSI"]).map(cj,subset=["J(KDJ)"]).map(cs,subset=["Upside","vs FV","Consenso"]), use_container_width=True)
 
-GLOS_FUND = "<b>Graham FV</b>: √(22.5×EPS×BookValue) fair value defensivo &nbsp;·&nbsp; <b>vs Graham</b>: % vs Graham &nbsp;·&nbsp; <b>Target 12M</b>: objetivo analistas &nbsp;·&nbsp; <b>Upside</b>: % vs Target"
+GLOS_FUND = "<b>Fair Value</b>: promedio Graham + Fwd P/E + Crecimiento &nbsp;·&nbsp; <b>vs FV</b>: % vs Fair Value &nbsp;·&nbsp; <b>Target 12M</b>: objetivo analistas &nbsp;·&nbsp; <b>Upside</b>: % vs Target"
 
 render_seccion(
     "🟢 SOBREVENTA FRESCA — RSI < 35", "sec-os", "sobreventa",
