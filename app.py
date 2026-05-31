@@ -292,54 +292,51 @@ def analizar_ticker(sym, df):
     adx_v = float(df['ADX'].iloc[-1]) if not pd.isna(df['ADX'].iloc[-1]) else 0
     precio= float(df['Close'].iloc[-1])
 
-    # ── 1. SOBREVENTA FRESCA ──
-    sobreventa = (
-        rsi_v < 35 and
-        bool(df['GIRO_J'].iloc[-1]) and
-        precio > float(df['Low'].iloc[-2]) and
-        bool(df['VOL_OK'].iloc[-1])
+    # ══════════════════════════════════════════════════════════
+    # 5 PUNTOS INDEPENDIENTES DE SCORE
+    # ══════════════════════════════════════════════════════════
+
+    # ── PUNTO 1: RSI < 35 (sobreventa) ──
+    p_rsi = rsi_v < 35
+
+    # ── PUNTO 2: GIRO KDJ + CRUCE MACD + volumen + cierre sobre min ayer ──
+    cierre_sobre_min = precio > float(df['Low'].iloc[-2])
+    vol_ok = bool(df['VOL_OK'].iloc[-1])
+    p_giro = (
+        bool(df['CROSS_KD'].iloc[-1] or df['CROSS_KD'].iloc[-2] or df['GIRO_J'].iloc[-1]) and
+        bool(df['GIRO_MACD'].iloc[-1] or df['CROSS_MACD'].iloc[-1] or df['CROSS_MACD'].iloc[-2]) and
+        cierre_sobre_min and
+        vol_ok
     )
 
-    # ── 2. TOCANDO SOPORTE MA50 / MA200 / MA325 ──
+    # ── PUNTO 3: TOQUE DE SOPORTE — Bollinger inf. O EMA 20/50/200/325 desde arriba ──
+    ma20_v  = float(df['MA20'].iloc[-1])
     ma50_v  = float(df['MA50'].iloc[-1])
     ma200_v = float(df['MA200'].iloc[-1])
     ma325_v = float(df['MA325'].iloc[-1])
     low_v   = float(df['Low'].iloc[-1])
-    toca_ma = (
-        (low_v <= ma50_v * 1.015 and precio > ma50_v * 0.985) or
-        (low_v <= ma200_v * 1.015 and precio > ma200_v * 0.985) or
-        (low_v <= ma325_v * 1.015 and precio > ma325_v * 0.985)
-    )
-    soporte = (
-        toca_ma and
-        bool(df['GIRO_J'].iloc[-1]) and
-        bool(df['VOL_OK'].iloc[-1])
-    )
-
-    # ── 3. REBOTE BOLLINGER ──
     bb_dn_y = float(df['BB_DN'].iloc[-2])
     low_y   = float(df['Low'].iloc[-2])
     bb_dn   = float(df['BB_DN'].iloc[-1])
-    rebote_bb = (
-        low_y <= bb_dn_y and
-        precio > bb_dn and
-        bool(df['GIRO_J'].iloc[-1]) and
-        bool(df['VOL_OK'].iloc[-1])
-    )
 
-    # ── 4. CRUCE KDJ + MACD ──
-    cruce = (
-        bool(df['CROSS_KD'].iloc[-1] or df['CROSS_KD'].iloc[-2]) and
-        bool(df['GIRO_MACD'].iloc[-1] or df['CROSS_MACD'].iloc[-1] or df['CROSS_MACD'].iloc[-2]) and
-        rsi_v < 50 and
-        bool(df['VOL_OK'].iloc[-1])
+    toca_ema = (
+        (low_v <= ma20_v  * 1.015 and precio > ma20_v  * 0.985) or
+        (low_v <= ma50_v  * 1.015 and precio > ma50_v  * 0.985) or
+        (low_v <= ma200_v * 1.015 and precio > ma200_v * 0.985) or
+        (low_v <= ma325_v * 1.015 and precio > ma325_v * 0.985)
     )
+    toca_bb = (low_y <= bb_dn_y and precio > bb_dn)
+    # Toque válido solo con volumen y cierre sobre mínimo de ayer
+    p_toque = (toca_ema or toca_bb) and cierre_sobre_min and vol_ok
 
-    if not (sobreventa or soporte or rebote_bb or cruce):
+    # ── PUNTO 4-5: VALOR (se calcula en fetch_fund, +1 o +2) ──
+    # Aqui solo registramos el score tecnico de 3 puntos.
+    # El bonus de valor (1 o 2) se suma despues en fetch_fund.
+
+    if not (p_rsi or p_giro or p_toque):
         return None
 
-    # Score técnico base (1-4)
-    score = sum([sobreventa, soporte, rebote_bb, cruce])
+    score_tecnico = sum([p_rsi, p_giro, p_toque])
 
     return {
         "sym": sym,
@@ -348,11 +345,13 @@ def analizar_ticker(sym, df):
         "rsi": rsi_v, "rsi_str": f"{rsi_v:.1f}",
         "j": j_v, "j_str": f"{j_v:.1f}",
         "adx": adx_v, "adx_str": f"{adx_v:.1f}",
-        "score": score,
-        "sobreventa": sobreventa,
-        "soporte":    soporte,
-        "rebote_bb":  rebote_bb,
-        "cruce":      cruce,
+        "score": score_tecnico,
+        "p_rsi":   p_rsi,
+        "p_giro":  p_giro,
+        "p_toque": p_toque,
+        # detalle de qué soporte tocó (para mostrar)
+        "toca_ema": toca_ema,
+        "toca_bb":  toca_bb,
     }
 
 # ======================================================================
@@ -471,7 +470,7 @@ def fetch_fund(item):
     item["upside"]="—"
     item["fv"]="—"
     item["fv_up"]="—"
-    item["bonus_fv"]=False
+    item["valor_pts"]=0
     if skip:
         return item
     fund = fetch_fundamentales(sym)
@@ -496,105 +495,137 @@ def fetch_fund(item):
     item["fv"] = fv_txt
     item["fv_up"] = fv_up_txt
 
-    # ── BONUS +1: FV Y Target ambos >= +15% (doble confirmacion de ganga) ──
-    if (fv_up_raw is not None and fv_up_raw >= 15 and
-        target_up_raw is not None and target_up_raw >= 15):
+    # ── PUNTO 4-5: VALOR (+1 o +2) ──
+    # +1 si FV >= +15% (barata vs fair value)
+    # +2 si ADEMÁS Target 12M >= +15% (doble confirmación: FV Y analistas)
+    fv_ok     = (fv_up_raw is not None and fv_up_raw >= 15)
+    target_ok = (target_up_raw is not None and target_up_raw >= 15)
+    if fv_ok and target_ok:
+        item["score"] = item["score"] + 2
+        item["valor_pts"] = 2
+    elif fv_ok:
         item["score"] = item["score"] + 1
-        item["bonus_fv"] = True
+        item["valor_pts"] = 1
+    else:
+        item["valor_pts"] = 0
 
     return item
 
 with ThreadPoolExecutor(max_workers=12) as executor:
     todos = list(executor.map(fetch_fund, resultados))
 
+# asegurar valor_pts en todos
+for x in todos:
+    if "valor_pts" not in x:
+        x["valor_pts"] = 0
+
 prog.progress(100, text="¡Listo!")
 prog.empty()
 
 # Resumen
-n_sob = sum(1 for x in todos if x["sobreventa"])
-n_sop = sum(1 for x in todos if x["soporte"])
-n_bb  = sum(1 for x in todos if x["rebote_bb"])
-n_cr  = sum(1 for x in todos if x["cruce"])
-n_top = sum(1 for x in todos if x["score"] >= 2)
+n_rsi   = sum(1 for x in todos if x["p_rsi"])
+n_giro  = sum(1 for x in todos if x["p_giro"])
+n_toque = sum(1 for x in todos if x["p_toque"])
+n_valor = sum(1 for x in todos if x.get("valor_pts",0) > 0)
 
-st.markdown(f'<div style="text-align:center;color:var(--muted);font-size:12px;padding:8px 0 16px;letter-spacing:.05em;">✅ {len(TICKERS)} tickers · {len(todos)} candidatos · <span style="color:#00e5a0;font-weight:700">{n_top} TOP-PICKS</span> · 🟢 {n_sob} sobreventa · 🟡 {n_sop} soporte · 🔵 {n_bb} bollinger · 🟣 {n_cr} cruce</div>', unsafe_allow_html=True)
-
-# ======================================================================
-# TOP PICKS — score >= 2 (incluye bonus fundamental)
-# ======================================================================
-top_picks = sorted([x for x in todos if x["score"] >= 2], key=lambda x: (-x["score"], x["rsi"]))
-
-if top_picks:
-    st.markdown('<div class="sec sec-os">⭐ TOP PICKS — MEJOR SCORE (TÉCNICO + FUNDAMENTAL)</div>', unsafe_allow_html=True)
-    st.markdown("""<div class="glosario">
-    <b>Score</b> — gatillos técnicos + bonus valor (verde 4+, azul 3, morado 2) &nbsp;·&nbsp;
-    <b>Gatillos</b> — 🟢SOB sobreventa · 🟡SOP soporte EMA50/200/325 · 🔵BB bollinger · 🟣CR cruce KDJ+MACD &nbsp;·&nbsp;
-    <b>💎VALOR</b> — bonus +1: Fair Value Y Target 12M ambos ≥+15% (barata por ambas valoraciones) &nbsp;·&nbsp;
-    <b>Fair Value</b> — promedio de 3 modelos: Graham + Forward P/E + Crecimiento proyectado &nbsp;·&nbsp;
-    <b>vs FV</b> — % entre precio y Fair Value (🟢 barato bajo FV) &nbsp;·&nbsp;
-    <b>Target 12M</b> — precio objetivo a 12 meses (consenso analistas) &nbsp;·&nbsp;
-    <b>Upside</b> — % entre precio y Target 12M: 🟢 ≥+15% · ⚪ 0/+15% · 🟡 -10/0% · 🔴 &lt;-10% &nbsp;·&nbsp;
-    <b>P/E fwd</b> — P/E proyectado próximos 12M &nbsp;·&nbsp;
-    <b>Consenso</b> — rating analistas (n)
-    </div>""", unsafe_allow_html=True)
-    rows = []
-    for x in top_picks:
-        gs = []
-        if x["sobreventa"]: gs.append("🟢SOB")
-        if x["soporte"]:    gs.append("🟡SOP")
-        if x["rebote_bb"]:  gs.append("🔵BB")
-        if x["cruce"]:      gs.append("🟣CR")
-        if x.get("bonus_fv"): gs.append("💎VALOR")
-        rows.append({
-            "Ticker": x["sym"], "Score": x["score"], "Gatillos": " ".join(gs),
-            "Precio": x["precio_str"],
-            "Fair Value": x.get("fv","—"), "vs FV": x.get("fv_up","—"),
-            "Target 12M": x.get("target","—"), "Upside": x.get("upside","—"),
-            "RSI": x["rsi_str"], "J(KDJ)": x["j_str"], "ADX": x["adx_str"],
-            "P/E": x.get("pe_ttm","—"), "P/E fwd": x.get("pe_fwd","—"),
-            "Consenso": x.get("consenso","—"),
-        })
-    df_top = pd.DataFrame(rows).reset_index(drop=True); df_top.index = range(1,len(df_top)+1)
-    st.dataframe(df_top.style.map(csc,subset=["Score"]).map(cr,subset=["RSI"]).map(cj,subset=["J(KDJ)"]).map(cs,subset=["Upside","vs FV","Consenso"]), use_container_width=True)
+st.markdown(f'<div style="text-align:center;color:var(--muted);font-size:12px;padding:8px 0 16px;letter-spacing:.05em;">✅ {len(TICKERS)} tickers · {len(todos)} candidatos · 🔴 {n_rsi} RSI&lt;35 · 🟣 {n_giro} giro+MACD · 🟡 {n_toque} soporte · 💎 {n_valor} valor</div>', unsafe_allow_html=True)
 
 # ======================================================================
-# 4 LISTAS INDIVIDUALES
+# HELPER: construir filas con todas las columnas
 # ======================================================================
-def render_seccion(titulo, css, key, glosario):
-    items = sorted([x for x in todos if x[key]], key=lambda x: x["rsi"])
-    st.markdown(f'<div class="sec {css}">{titulo}</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="glosario">{glosario}</div>', unsafe_allow_html=True)
-    if not items:
-        st.info("Sin candidatos en esta categoría hoy.")
-        return
-    rows = [{
-        "Ticker": x["sym"], "Precio": x["precio_str"],
+def construir_gatillos(x):
+    gs = []
+    if x["p_rsi"]:   gs.append("🔴RSI")
+    if x["p_giro"]:  gs.append("🟣GIRO")
+    if x["p_toque"]:
+        if x.get("toca_bb"): gs.append("🔵BB")
+        else:                gs.append("🟡EMA")
+    vp = x.get("valor_pts",0)
+    if vp == 2:   gs.append("💎VALOR×2")
+    elif vp == 1: gs.append("💎VALOR×1")
+    return " ".join(gs)
+
+def fila(x, con_score=True):
+    r = {"Ticker": x["sym"]}
+    if con_score:
+        r["Score"] = x["score"]
+        r["Gatillos"] = construir_gatillos(x)
+    r.update({
+        "Precio": x["precio_str"],
         "Fair Value": x.get("fv","—"), "vs FV": x.get("fv_up","—"),
         "Target 12M": x.get("target","—"), "Upside": x.get("upside","—"),
         "RSI": x["rsi_str"], "J(KDJ)": x["j_str"], "ADX": x["adx_str"],
         "P/E": x.get("pe_ttm","—"), "P/E fwd": x.get("pe_fwd","—"),
         "Consenso": x.get("consenso","—"),
-    } for x in items]
+    })
+    return r
+
+def pintar(df):
+    sub = [c for c in ["Upside","vs FV","Consenso"] if c in df.columns]
+    sty = df.style.map(cr,subset=["RSI"]).map(cj,subset=["J(KDJ)"]).map(cs,subset=sub)
+    if "Score" in df.columns:
+        sty = sty.map(csc,subset=["Score"])
+    return sty
+
+# ======================================================================
+# TOP PICKS — TABLAS SEPARADAS POR PUNTAJE (4-5 · 3 · 2 · 1)
+# ======================================================================
+st.markdown('<div class="sec sec-os">⭐ TOP PICKS POR PUNTAJE</div>', unsafe_allow_html=True)
+st.markdown("""<div class="glosario">
+<b>5 puntos posibles</b> &nbsp;·&nbsp;
+<b>🔴RSI</b> RSI&lt;35 sobreventa &nbsp;·&nbsp;
+<b>🟣GIRO</b> giro KDJ + cruce MACD + cierre&gt;mín ayer + volumen &nbsp;·&nbsp;
+<b>🟡EMA / 🔵BB</b> toque EMA 20/50/200/325 o Bollinger + cierre&gt;mín ayer + volumen &nbsp;·&nbsp;
+<b>💎VALOR×1</b> Fair Value ≥+15% · <b>💎VALOR×2</b> FV Y Target 12M ambos ≥+15% &nbsp;·&nbsp;
+<b>Fair Value</b> promedio de 3 modelos (Graham + Fwd P/E + Crecimiento) &nbsp;·&nbsp;
+<b>Upside</b> % vs Target 12M analistas
+</div>""", unsafe_allow_html=True)
+
+def tabla_puntaje(titulo, lista, color):
+    if not lista:
+        return
+    st.markdown(f'<div style="font-family:Syne,sans-serif;font-weight:700;font-size:12px;color:{color};margin:14px 0 4px;letter-spacing:.05em;">{titulo} ({len(lista)})</div>', unsafe_allow_html=True)
+    rows = [fila(x) for x in sorted(lista, key=lambda x:(-x["score"], x["rsi"]))]
+    df = pd.DataFrame(rows).reset_index(drop=True); df.index = range(1,len(df)+1)
+    st.dataframe(pintar(df), use_container_width=True)
+
+g45 = [x for x in todos if x["score"] >= 4]
+g3  = [x for x in todos if x["score"] == 3]
+g2  = [x for x in todos if x["score"] == 2]
+g1  = [x for x in todos if x["score"] == 1]
+
+tabla_puntaje("🏆 PUNTAJE 4-5 — MÁXIMA CONVICCIÓN", g45, "#00e5a0")
+tabla_puntaje("🥈 PUNTAJE 3 — FUERTE", g3, "#00d4ff")
+tabla_puntaje("🥉 PUNTAJE 2 — MODERADO", g2, "#b48cff")
+tabla_puntaje("• PUNTAJE 1 — VIGILANCIA", g1, "#718096")
+
+# ======================================================================
+# LISTAS POR ITEM INDIVIDUAL
+# ======================================================================
+def render_seccion(titulo, css, key, glosario):
+    items = sorted([x for x in todos if x.get(key)], key=lambda x: x["rsi"])
+    st.markdown(f'<div class="sec {css}">{titulo}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="glosario">{glosario}</div>', unsafe_allow_html=True)
+    if not items:
+        st.info("Sin candidatos en esta categoría hoy.")
+        return
+    rows = [fila(x, con_score=False) for x in items]
     df_ = pd.DataFrame(rows).reset_index(drop=True); df_.index = range(1,len(df_)+1)
-    st.dataframe(df_.style.map(cr,subset=["RSI"]).map(cj,subset=["J(KDJ)"]).map(cs,subset=["Upside","vs FV","Consenso"]), use_container_width=True)
+    st.dataframe(pintar(df_), use_container_width=True)
 
 GLOS_FUND = "<b>Fair Value</b>: promedio Graham + Fwd P/E + Crecimiento &nbsp;·&nbsp; <b>vs FV</b>: % vs Fair Value &nbsp;·&nbsp; <b>Target 12M</b>: objetivo analistas &nbsp;·&nbsp; <b>Upside</b>: % vs Target"
 
 render_seccion(
-    "🟢 SOBREVENTA FRESCA — RSI < 35", "sec-os", "sobreventa",
-    "<b>Criterio</b>: RSI &lt;35 + KDJ girando + cierre sobre mínimo de ayer + volumen &nbsp;·&nbsp; " + GLOS_FUND
+    "🔴 RSI EN SOBREVENTA — RSI < 35", "sec-os", "p_rsi",
+    "<b>Criterio</b>: RSI &lt;35 — lista de vigilancia de sobreventa &nbsp;·&nbsp; " + GLOS_FUND
 )
 render_seccion(
-    "🟡 TOCANDO SOPORTE EMA 50 / 200 / 325", "sec-mas", "soporte",
-    "<b>Criterio</b>: precio toca EMA50, EMA200 o EMA325 + KDJ girando + volumen &nbsp;·&nbsp; " + GLOS_FUND
+    "🟣 GIRO KDJ + CRUCE MACD", "sec-cr", "p_giro",
+    "<b>Criterio</b>: KDJ girando/cruzando + MACD gira/cruza + cierre sobre mínimo de ayer + volumen ≥85% &nbsp;·&nbsp; " + GLOS_FUND
 )
 render_seccion(
-    "🔵 REBOTE BOLLINGER INFERIOR", "sec-bb", "rebote_bb",
-    "<b>Criterio</b>: tocó BB inferior ayer y cerró sobre ella + KDJ girando + volumen &nbsp;·&nbsp; " + GLOS_FUND
-)
-render_seccion(
-    "🟣 CRUCE KDJ + MACD EN ZONA BAJA", "sec-cr", "cruce",
-    "<b>Criterio</b>: K cruza D + MACD gira/cruza + RSI &lt;50 + volumen &nbsp;·&nbsp; " + GLOS_FUND
+    "🟡 TOCANDO SOPORTE — EMA 20/50/200/325 o BOLLINGER", "sec-mas", "p_toque",
+    "<b>Criterio</b>: toca EMA (20/50/200/325) o banda inferior Bollinger desde arriba + cierre sobre mínimo de ayer + volumen ≥85% &nbsp;·&nbsp; " + GLOS_FUND
 )
 
 st.markdown('<p class="footer">Rebote Screener · Técnico + Fundamental · Solo fines educativos · No es asesoría financiera</p>', unsafe_allow_html=True)
