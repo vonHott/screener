@@ -104,6 +104,61 @@ TICKERS = [
 ]
 
 # ======================================================================
+# TICKERS COMPARTIDOS — leer/escribir desde GitHub Gist
+# ======================================================================
+import urllib.request, json as _json
+
+GIST_ID = "00c849548b7f82e35530eb837df20a3a"
+
+def _gist_token():
+    try:
+        return st.secrets["GITHUB_TOKEN"]
+    except Exception:
+        return None
+
+@st.cache_data(ttl=60, show_spinner=False)
+def leer_tickers_compartidos():
+    """Lee la lista de tickers que agregaron los amigos desde el Gist."""
+    try:
+        url = f"https://api.github.com/gists/{GIST_ID}"
+        req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            data = _json.loads(r.read().decode())
+        contenido = data["files"]["tickers.txt"]["content"]
+        # formato: tickers separados por coma o salto de linea
+        items = [t.strip().upper() for t in contenido.replace("\n", ",").split(",")]
+        return [t for t in items if t]
+    except Exception:
+        return []
+
+def escribir_tickers_compartidos(lista):
+    """Sobrescribe el Gist con la lista (ya deduplicada)."""
+    token = _gist_token()
+    if not token:
+        return False, "No hay token configurado en Secrets."
+    try:
+        url = f"https://api.github.com/gists/{GIST_ID}"
+        payload = _json.dumps({
+            "files": {"tickers.txt": {"content": ",".join(lista)}}
+        }).encode()
+        req = urllib.request.Request(url, data=payload, method="PATCH", headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        })
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return (r.status in (200, 201)), "ok"
+    except Exception as e:
+        return False, str(e)
+
+def normalizar_ticker(t):
+    """Normaliza formato yfinance: BRK.B -> BRK-B, mayusculas."""
+    t = t.strip().upper()
+    t = t.replace(".B", "-B").replace(".A", "-A")
+    return t
+
+
+# ======================================================================
 # FUNDAMENTALES — fair value, target 12M, P/E, P/B, P/S, consensus
 # ======================================================================
 @st.cache_data(ttl=300, show_spinner=False)
@@ -428,9 +483,59 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ======================================================================
+# BOX DE TICKERS COMPARTIDOS (amigos agregan, sin duplicar)
+# ======================================================================
+compartidos = leer_tickers_compartidos()
+
+with st.expander(f"➕ Agregar tickers a la watchlist compartida ({len(compartidos)} agregados)", expanded=False):
+    st.markdown('<div style="font-size:11px;color:#4a5568;margin-bottom:6px;">Escribe uno o varios tickers separados por coma (ej: <b>ALK, PYPL, V</b>). Se guardan para todos y no se repiten.</div>', unsafe_allow_html=True)
+    col1, col2 = st.columns([4,1])
+    with col1:
+        nuevos_input = st.text_input("Tickers", placeholder="ALK, PYPL, V", label_visibility="collapsed")
+    with col2:
+        agregar = st.button("Agregar", use_container_width=True)
+
+    if agregar and nuevos_input.strip():
+        # normalizar y deduplicar contra base + compartidos
+        base_set = set(TICKERS)
+        comp_set = set(compartidos)
+        pedidos = [normalizar_ticker(t) for t in nuevos_input.replace("\n", ",").split(",")]
+        pedidos = [t for t in pedidos if t]
+
+        nuevos_unicos, ya_existen = [], []
+        for t in pedidos:
+            if t in base_set or t in comp_set or t in nuevos_unicos:
+                ya_existen.append(t)
+            else:
+                nuevos_unicos.append(t)
+
+        if nuevos_unicos:
+            lista_final = compartidos + nuevos_unicos
+            ok, msg = escribir_tickers_compartidos(lista_final)
+            if ok:
+                st.success(f"✅ Agregados: {', '.join(nuevos_unicos)}" + (f" · Ya existían (omitidos): {', '.join(ya_existen)}" if ya_existen else ""))
+                leer_tickers_compartidos.clear()  # limpiar cache para releer
+                st.rerun()
+            else:
+                st.error(f"No se pudo guardar: {msg}")
+        else:
+            st.warning(f"Esos tickers ya estaban en la lista: {', '.join(ya_existen)}")
+
+    if compartidos:
+        st.markdown(f'<div style="font-size:10px;color:#4a5568;margin-top:8px;">Compartidos actuales: {", ".join(compartidos)}</div>', unsafe_allow_html=True)
+
+# ── Fusionar base + compartidos, SIN duplicados (orden estable) ──
+_vistos = set()
+WATCHLIST = []
+for t in list(TICKERS) + compartidos:
+    if t not in _vistos:
+        WATCHLIST.append(t)
+        _vistos.add(t)
+
+# ======================================================================
 # ESCANEO AUTOMATICO — batch download + threading
 # ======================================================================
-prog = st.progress(0, text=f"Descargando {len(TICKERS)} tickers en batch...")
+prog = st.progress(0, text=f"Descargando {len(WATCHLIST)} tickers en batch...")
 
 @st.cache_data(ttl=300, show_spinner=False)
 def descargar_batch(tickers_tuple):
@@ -439,14 +544,14 @@ def descargar_batch(tickers_tuple):
         progress=False, auto_adjust=True, threads=True,
     )
 
-df_batch = descargar_batch(tuple(TICKERS))
+df_batch = descargar_batch(tuple(WATCHLIST))
 prog.progress(40, text="Calculando indicadores...")
 
 # Fase 2: indicadores
 resultados = []
-for idx, sym in enumerate(TICKERS):
+for idx, sym in enumerate(WATCHLIST):
     if idx % 30 == 0:
-        prog.progress(40 + int(idx/len(TICKERS)*30), text=f"Indicadores · {idx}/{len(TICKERS)}")
+        prog.progress(40 + int(idx/len(WATCHLIST)*30), text=f"Indicadores · {idx}/{len(WATCHLIST)}")
     try:
         if isinstance(df_batch.columns, pd.MultiIndex):
             df_sym = df_batch[sym].copy() if sym in df_batch.columns.get_level_values(0) else None
@@ -528,7 +633,7 @@ n_giro  = sum(1 for x in todos if x["p_giro"])
 n_toque = sum(1 for x in todos if x["p_toque"])
 n_valor = sum(1 for x in todos if x.get("valor_pts",0) > 0)
 
-st.markdown(f'<div style="text-align:center;color:var(--muted);font-size:12px;padding:8px 0 16px;letter-spacing:.05em;">✅ {len(TICKERS)} tickers · {len(todos)} candidatos · 🔴 {n_rsi} RSI&lt;35 · 🟣 {n_giro} giro+MACD · 🟡 {n_toque} soporte · 💎 {n_valor} valor</div>', unsafe_allow_html=True)
+st.markdown(f'<div style="text-align:center;color:var(--muted);font-size:12px;padding:8px 0 16px;letter-spacing:.05em;">✅ {len(WATCHLIST)} tickers · {len(todos)} candidatos · 🔴 {n_rsi} RSI&lt;35 · 🟣 {n_giro} giro+MACD · 🟡 {n_toque} soporte · 💎 {n_valor} valor</div>', unsafe_allow_html=True)
 
 # ======================================================================
 # HELPER: construir filas con todas las columnas
