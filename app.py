@@ -151,11 +151,21 @@ def escribir_tickers_compartidos(lista):
     except Exception as e:
         return False, str(e)
 
+import re as _re
 def normalizar_ticker(t):
-    """Normaliza formato yfinance: BRK.B -> BRK-B, mayusculas."""
+    """Normaliza formato yfinance: BRK.B -> BRK-B, mayusculas. Limpia simbolos."""
     t = t.strip().upper()
+    t = t.replace("$", "").replace(" ", "")  # quitar $ y espacios internos
     t = t.replace(".B", "-B").replace(".A", "-A")
     return t
+
+def ticker_valido(t):
+    """Valida formato de ticker yfinance: letras/numeros + sufijos (-USD, =F, =X, .HK, etc).
+    Rechaza nombres de empresa, texto libre, tickers muy largos."""
+    if not t or len(t) > 12:
+        return False
+    # Formatos válidos: AAPL, BRK-B, BTC-USD, CL=F, EURUSD=X, 9988.HK, BAYN.DE, ROG.SW
+    return bool(_re.match(r'^[A-Z0-9]{1,7}([\-\.=][A-Z0-9]{1,4})?$', t))
 
 
 # ======================================================================
@@ -163,24 +173,28 @@ def normalizar_ticker(t):
 # ======================================================================
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_fundamentales(sym):
-    """Datos fundamentales del ticker desde yfinance.info"""
-    try:
-        info = yf.Ticker(sym).info
-        if not info or len(info) < 10:
-            return None
-        return {
-            "target_mean":   info.get("targetMeanPrice"),
-            "n_analysts":    info.get("numberOfAnalystOpinions"),
-            "rec_mean":      info.get("recommendationMean"),
-            "pe_ttm":        info.get("trailingPE"),
-            "pe_fwd":        info.get("forwardPE"),
-            "eps_ttm":       info.get("trailingEps"),
-            "fwd_eps":       info.get("forwardEps"),
-            "book_value":    info.get("bookValue"),
-            "growth":        info.get("earningsGrowth"),
-        }
-    except:
-        return None
+    """Datos fundamentales del ticker desde yfinance. Reintenta si Yahoo no responde."""
+    import time
+    for intento in range(3):
+        try:
+            tk = yf.Ticker(sym)
+            info = tk.info
+            if info and len(info) >= 10 and (info.get("targetMeanPrice") or info.get("trailingPE") or info.get("trailingEps")):
+                return {
+                    "target_mean":   info.get("targetMeanPrice"),
+                    "n_analysts":    info.get("numberOfAnalystOpinions"),
+                    "rec_mean":      info.get("recommendationMean"),
+                    "pe_ttm":        info.get("trailingPE"),
+                    "pe_fwd":        info.get("forwardPE"),
+                    "eps_ttm":       info.get("trailingEps"),
+                    "fwd_eps":       info.get("forwardEps"),
+                    "book_value":    info.get("bookValue"),
+                    "growth":        info.get("earningsGrowth"),
+                }
+        except Exception:
+            pass
+        time.sleep(0.4 * (intento + 1))  # pausa escalonada: 0.4s, 0.8s, 1.2s
+    return None
 
 def calc_upside(precio_actual, target_mean):
     """% entre precio actual y Target 12M de analistas. Devuelve (texto, raw, bajo_target)."""
@@ -502,9 +516,11 @@ with st.expander(f"➕ Agregar tickers a la watchlist compartida ({len(compartid
         pedidos = [normalizar_ticker(t) for t in nuevos_input.replace("\n", ",").split(",")]
         pedidos = [t for t in pedidos if t]
 
-        nuevos_unicos, ya_existen = [], []
+        nuevos_unicos, ya_existen, invalidos = [], [], []
         for t in pedidos:
-            if t in base_set or t in comp_set or t in nuevos_unicos:
+            if not ticker_valido(t):
+                invalidos.append(t)
+            elif t in base_set or t in comp_set or t in nuevos_unicos:
                 ya_existen.append(t)
             else:
                 nuevos_unicos.append(t)
@@ -513,13 +529,19 @@ with st.expander(f"➕ Agregar tickers a la watchlist compartida ({len(compartid
             lista_final = compartidos + nuevos_unicos
             ok, msg = escribir_tickers_compartidos(lista_final)
             if ok:
-                st.success(f"✅ Agregados: {', '.join(nuevos_unicos)}" + (f" · Ya existían (omitidos): {', '.join(ya_existen)}" if ya_existen else ""))
+                aviso = f"✅ Agregados: {', '.join(nuevos_unicos)}"
+                if ya_existen: aviso += f" · Ya existían: {', '.join(ya_existen)}"
+                if invalidos:  aviso += f" · ⚠️ Formato inválido (omitidos): {', '.join(invalidos)}"
+                st.success(aviso)
                 leer_tickers_compartidos.clear()  # limpiar cache para releer
                 st.rerun()
             else:
                 st.error(f"No se pudo guardar: {msg}")
         else:
-            st.warning(f"Esos tickers ya estaban en la lista: {', '.join(ya_existen)}")
+            msg_w = ""
+            if ya_existen: msg_w += f"Ya estaban: {', '.join(ya_existen)}. "
+            if invalidos:  msg_w += f"⚠️ Formato inválido: {', '.join(invalidos)} (usa el símbolo bursátil, ej: AAPL, no el nombre)."
+            st.warning(msg_w or "Nada que agregar.")
 
     if compartidos:
         st.markdown(f'<div style="font-size:10px;color:#4a5568;margin-top:8px;">Compartidos actuales: {", ".join(compartidos)}</div>', unsafe_allow_html=True)
@@ -616,7 +638,7 @@ def fetch_fund(item):
 
     return item
 
-with ThreadPoolExecutor(max_workers=12) as executor:
+with ThreadPoolExecutor(max_workers=4) as executor:
     todos = list(executor.map(fetch_fund, resultados))
 
 # asegurar valor_pts en todos
