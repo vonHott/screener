@@ -76,6 +76,9 @@ html,body,[class*="css"]{font-family:'DM Mono',monospace;background:var(--bg)!im
 .tw tbody tr:active td{background:rgba(0,212,255,0.22)!important}
 .tw a.tk{color:#00d4ff;text-decoration:none;font-weight:700;border-bottom:1px dotted #00d4ff55}
 .tw a.tk:hover{border-bottom:1px solid #00d4ff}
+.tw th{cursor:pointer;user-select:none}
+.tw th:hover{color:#00d4ff;background:#0d1424}
+.tw th .ar{margin-left:3px;font-size:8px;opacity:.7}
 .footer{color:var(--border2);font-size:10px;text-align:center;padding:16px 0 4px}
 </style>
 """, unsafe_allow_html=True)
@@ -723,8 +726,37 @@ def _color_estilo(col, val):
         return "color:#4a5568;text-align:center"
     return ""
 
+import re as _re2
+_TABLA_N = [0]  # contador para id unico por tabla
+
+def _valor_sort(col, raw, idx):
+    """Extrae valor numerico para ordenar. Devuelve float o texto."""
+    s = str(raw)
+    if col == "#":
+        return idx
+    if col == "Ticker":
+        # ordenar alfabetico: usar el simbolo
+        m = _re2.search(r'>([^<]+)</a>', s)
+        return m.group(1) if m else s
+    if col in ("Gatillos","Consenso"):
+        # Consenso: ordenar por nivel (Strong Buy=5 ... Sell=1)
+        if "Strong Buy" in s: return 5
+        if "Buy" in s: return 4
+        if "Hold" in s: return 3
+        if "Sell" in s and "Strong" in s: return 1
+        if "Sell" in s: return 2
+        return 0
+    # numerico: extraer primer numero (con signo) de la celda
+    m = _re2.search(r'-?\d+\.?\d*', s.replace(",",""))
+    if m:
+        return float(m.group())
+    return -999999  # los "—" van al fondo
+
 def tabla_html(lista, con_score=True):
-    """Genera tabla HTML: ticker como link a Finviz + fila resaltada completa."""
+    """Tabla HTML ordenable por columna (JS en navegador) + ticker-link + fila resaltada."""
+    _TABLA_N[0] += 1
+    tid = f"tw{_TABLA_N[0]}"
+
     if con_score:
         cols = ["#","Ticker","Score","Gatillos","Precio","Fair Value","vs FV",
                 "Target 12M","Upside","RSI","J(KDJ)","ADX","P/E","P/E fwd","Consenso"]
@@ -732,7 +764,8 @@ def tabla_html(lista, con_score=True):
         cols = ["#","Ticker","Precio","Fair Value","vs FV",
                 "Target 12M","Upside","RSI","J(KDJ)","ADX","P/E","P/E fwd","Consenso"]
 
-    head = "".join(f"<th>{c}</th>" for c in cols)
+    head = "".join(f'<th>{c}<span class="ar"></span></th>' for c in cols)
+
     filas_html = []
     for i, x in enumerate(lista, 1):
         celdas = {
@@ -749,15 +782,16 @@ def tabla_html(lista, con_score=True):
         }
         tds = []
         for c in cols:
+            sval = _valor_sort(c, celdas[c], i)
             if c in ("#","Ticker"):
-                tds.append(f"<td>{celdas[c]}</td>")
+                tds.append(f'<td data-s="{sval}">{celdas[c]}</td>')
             else:
                 estilo = _color_estilo(c, celdas[c])
-                tds.append(f'<td style="{estilo}">{celdas[c]}</td>')
+                tds.append(f'<td data-s="{sval}" style="{estilo}">{celdas[c]}</td>')
         filas_html.append("<tr>" + "".join(tds) + "</tr>")
 
     cuerpo = "".join(filas_html)
-    return '<div class="tw"><table><thead><tr>' + head + '</tr></thead><tbody>' + cuerpo + '</tbody></table></div>'
+    return f'<div class="tw"><table id="{tid}"><thead><tr>' + head + '</tr></thead><tbody>' + cuerpo + '</tbody></table></div>'
 
 # ======================================================================
 # TOP PICKS — TABLAS SEPARADAS POR PUNTAJE (4-5 · 3 · 2 · 1)
@@ -816,5 +850,52 @@ render_seccion(
     "🟡 TOCANDO SOPORTE — EMA 20/50/200/325 o BOLLINGER", "sec-mas", "p_toque",
     "<b>Criterio</b>: toca EMA (20/50/200/325) o banda inferior Bollinger desde arriba + cierre sobre mínimo de ayer + volumen ≥85% &nbsp;·&nbsp; " + GLOS_FUND
 )
+
+
+# ======================================================================
+# JS DE ORDENAMIENTO POR COLUMNA (corre en el navegador, sin reruns)
+# ======================================================================
+import streamlit.components.v1 as components
+components.html("""
+<script>
+function ordenar(tabla, col, th){
+    const tbody = tabla.querySelector('tbody');
+    const filas = Array.from(tbody.querySelectorAll('tr'));
+    const asc = th.getAttribute('data-asc') !== 'true';
+    tabla.querySelectorAll('th').forEach(h=>{h.removeAttribute('data-asc'); const a=h.querySelector('.ar'); if(a)a.textContent='';});
+    th.setAttribute('data-asc', asc);
+    const ar = th.querySelector('.ar'); if(ar) ar.textContent = asc ? ' \u25B2' : ' \u25BC';
+    filas.sort((ra,rb)=>{
+        let a = ra.children[col].getAttribute('data-s');
+        let b = rb.children[col].getAttribute('data-s');
+        const na = parseFloat(a), nb = parseFloat(b);
+        if(!isNaN(na) && !isNaN(nb)){ return asc ? na-nb : nb-na; }
+        a=(a||'').toString(); b=(b||'').toString();
+        return asc ? a.localeCompare(b) : b.localeCompare(a);
+    });
+    filas.forEach(f=>tbody.appendChild(f));
+}
+function activar(){
+    const doc = window.parent.document;
+    const tablas = doc.querySelectorAll('.tw table');
+    tablas.forEach(tabla=>{
+        if(tabla.getAttribute('data-sortable')) return;  // ya activada
+        tabla.setAttribute('data-sortable','1');
+        const ths = tabla.querySelectorAll('th');
+        ths.forEach((th, idx)=>{
+            th.style.cursor='pointer';
+            th.addEventListener('click', ()=>ordenar(tabla, idx, th));
+        });
+    });
+}
+// reintentar varias veces hasta que las tablas existan en el DOM padre
+let intentos = 0;
+const timer = setInterval(()=>{
+    activar();
+    intentos++;
+    if(intentos > 20) clearInterval(timer);
+}, 400);
+</script>
+""", height=0)
 
 st.markdown('<p class="footer">Rebote Screener · Técnico + Fundamental · Solo fines educativos · No es asesoría financiera</p>', unsafe_allow_html=True)
