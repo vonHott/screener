@@ -62,6 +62,11 @@ html,body,[class*="css"]{font-family:'DM Mono',monospace;background:var(--bg)!im
 .glosario{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:11px;color:var(--muted);line-height:1.9}
 .glosario b{color:#718096}
 [data-testid="stDataFrame"]{border:1px solid var(--border)!important;border-radius:10px!important;font-family:'DM Mono',monospace!important;font-size:11px!important}
+/* Resaltar fila completa al pasar cursor (PC) o tocar (movil) — leer horizontal sin perderse */
+[data-testid="stDataFrame"] [role="row"]:hover [role="gridcell"],
+[data-testid="stDataFrame"] [role="row"]:hover [role="rowheader"]{background:rgba(0,212,255,0.14)!important;transition:background .1s}
+[data-testid="stDataFrame"] [role="row"]:active [role="gridcell"],
+[data-testid="stDataFrame"] [role="row"]:active [role="rowheader"]{background:rgba(0,212,255,0.22)!important}
 .footer{color:var(--border2);font-size:10px;text-align:center;padding:16px 0 4px}
 </style>
 """, unsafe_allow_html=True)
@@ -672,8 +677,13 @@ def construir_gatillos(x):
     elif vp == 1: gs.append("💎VALOR×1")
     return " ".join(gs)
 
+def finviz_url(sym):
+    """URL de finviz para el ticker (limpia sufijos no soportados)."""
+    base = sym.replace("-USD","").replace("=F","").replace("=X","")
+    return f"https://finviz.com/quote.ashx?t={base}&p=d"
+
 def fila(x, con_score=True):
-    r = {"Ticker": x["sym"]}
+    r = {"Ticker": x["sym"], "Chart": finviz_url(x["sym"])}
     if con_score:
         r["Score"] = x["score"]
         r["Gatillos"] = construir_gatillos(x)
@@ -714,7 +724,9 @@ def tabla_puntaje(titulo, lista, color):
     st.markdown(f'<div style="font-family:Syne,sans-serif;font-weight:700;font-size:12px;color:{color};margin:14px 0 4px;letter-spacing:.05em;">{titulo} ({len(lista)})</div>', unsafe_allow_html=True)
     rows = [fila(x) for x in sorted(lista, key=lambda x:(-x["score"], x["rsi"]))]
     df = pd.DataFrame(rows).reset_index(drop=True); df.index = range(1,len(df)+1)
-    st.dataframe(pintar(df), use_container_width=True)
+    st.dataframe(pintar(df), use_container_width=True, column_config={
+        "Chart": st.column_config.LinkColumn("📊", help="Abrir en Finviz", display_text="ver", width="small")
+    })
 
 g45 = [x for x in todos if x["score"] >= 4]
 g3  = [x for x in todos if x["score"] == 3]
@@ -738,7 +750,9 @@ def render_seccion(titulo, css, key, glosario):
         return
     rows = [fila(x, con_score=False) for x in items]
     df_ = pd.DataFrame(rows).reset_index(drop=True); df_.index = range(1,len(df_)+1)
-    st.dataframe(pintar(df_), use_container_width=True)
+    st.dataframe(pintar(df_), use_container_width=True, column_config={
+        "Chart": st.column_config.LinkColumn("📊", help="Abrir en Finviz", display_text="ver", width="small")
+    })
 
 GLOS_FUND = "<b>Fair Value</b>: promedio Graham + Fwd P/E + Crecimiento &nbsp;·&nbsp; <b>vs FV</b>: % vs Fair Value &nbsp;·&nbsp; <b>Target 12M</b>: objetivo analistas &nbsp;·&nbsp; <b>Upside</b>: % vs Target"
 
