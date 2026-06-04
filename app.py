@@ -62,11 +62,20 @@ html,body,[class*="css"]{font-family:'DM Mono',monospace;background:var(--bg)!im
 .glosario{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:10px;font-size:11px;color:var(--muted);line-height:1.9}
 .glosario b{color:#718096}
 [data-testid="stDataFrame"]{border:1px solid var(--border)!important;border-radius:10px!important;font-family:'DM Mono',monospace!important;font-size:11px!important}
-/* Resaltar fila completa al pasar cursor (PC) o tocar (movil) — leer horizontal sin perderse */
-[data-testid="stDataFrame"] [role="row"]:hover [role="gridcell"],
-[data-testid="stDataFrame"] [role="row"]:hover [role="rowheader"]{background:rgba(0,212,255,0.14)!important;transition:background .1s}
-[data-testid="stDataFrame"] [role="row"]:active [role="gridcell"],
-[data-testid="stDataFrame"] [role="row"]:active [role="rowheader"]{background:rgba(0,212,255,0.22)!important}
+/* ===== TABLA HTML PERSONALIZADA — ticker-link + fila resaltada ===== */
+.tw{overflow-x:auto;border:1px solid var(--border);border-radius:10px;margin-bottom:10px;-webkit-overflow-scrolling:touch}
+.tw table{border-collapse:collapse;width:100%;font-family:'DM Mono',monospace;font-size:11px;white-space:nowrap}
+.tw th{background:#0a0e18;color:#718096;font-weight:500;text-transform:uppercase;font-size:9px;letter-spacing:.06em;padding:9px 12px;text-align:right;border-bottom:1px solid var(--border2);position:sticky;top:0}
+.tw th:first-child,.tw th:nth-child(2){text-align:left}
+.tw td{padding:8px 12px;text-align:right;border-bottom:1px solid var(--border);color:var(--text)}
+.tw td:first-child{text-align:right;color:var(--muted);font-size:10px}
+.tw td:nth-child(2){text-align:left;font-weight:600}
+.tw tr{transition:background .08s}
+/* fila resaltada completa al pasar cursor o tocar */
+.tw tbody tr:hover td{background:rgba(0,212,255,0.13)!important}
+.tw tbody tr:active td{background:rgba(0,212,255,0.22)!important}
+.tw a.tk{color:#00d4ff;text-decoration:none;font-weight:700;border-bottom:1px dotted #00d4ff55}
+.tw a.tk:hover{border-bottom:1px solid #00d4ff}
 .footer{color:var(--border2);font-size:10px;text-align:center;padding:16px 0 4px}
 </style>
 """, unsafe_allow_html=True)
@@ -682,27 +691,73 @@ def finviz_url(sym):
     base = sym.replace("-USD","").replace("=F","").replace("=X","")
     return f"https://finviz.com/quote.ashx?t={base}&p=d"
 
-def fila(x, con_score=True):
-    r = {"Ticker": x["sym"], "Chart": finviz_url(x["sym"])}
-    if con_score:
-        r["Score"] = x["score"]
-        r["Gatillos"] = construir_gatillos(x)
-    r.update({
-        "Precio": x["precio_str"],
-        "Fair Value": x.get("fv","—"), "vs FV": x.get("fv_up","—"),
-        "Target 12M": x.get("target","—"), "Upside": x.get("upside","—"),
-        "RSI": x["rsi_str"], "J(KDJ)": x["j_str"], "ADX": x["adx_str"],
-        "P/E": x.get("pe_ttm","—"), "P/E fwd": x.get("pe_fwd","—"),
-        "Consenso": x.get("consenso","—"),
-    })
-    return r
+def _color_estilo(col, val):
+    """Devuelve estilo inline segun la columna y valor (replica cr/cj/cs/csc)."""
+    s = str(val)
+    if col == "RSI":
+        try:
+            r=float(s)
+            if r<33: return "color:#ff4d6d;font-weight:600"
+            if r>65: return "color:#00e5a0;font-weight:600"
+        except: pass
+        return "color:#4a5568"
+    if col == "J(KDJ)":
+        try:
+            r=float(s)
+            if r<20: return "color:#ff4d6d;font-weight:600"
+            if r>80: return "color:#ffd166;font-weight:600"
+        except: pass
+        return "color:#4a5568"
+    if col in ("Upside","vs FV","Consenso"):
+        if "🟢" in s: return "color:#00e5a0;font-weight:600"
+        if "🔴" in s: return "color:#ff4d6d;font-weight:600"
+        if "🟡" in s: return "color:#ffd166;font-weight:600"
+        return "color:#4a5568"
+    if col == "Score":
+        try:
+            n=int(float(s))
+            if n>=4: return "color:#00e5a0;font-weight:700;text-align:center"
+            if n==3: return "color:#00d4ff;font-weight:600;text-align:center"
+            if n==2: return "color:#b48cff;font-weight:600;text-align:center"
+        except: pass
+        return "color:#4a5568;text-align:center"
+    return ""
 
-def pintar(df):
-    sub = [c for c in ["Upside","vs FV","Consenso"] if c in df.columns]
-    sty = df.style.map(cr,subset=["RSI"]).map(cj,subset=["J(KDJ)"]).map(cs,subset=sub)
-    if "Score" in df.columns:
-        sty = sty.map(csc,subset=["Score"])
-    return sty
+def tabla_html(lista, con_score=True):
+    """Genera tabla HTML: ticker como link a Finviz + fila resaltada completa."""
+    if con_score:
+        cols = ["#","Ticker","Score","Gatillos","Precio","Fair Value","vs FV",
+                "Target 12M","Upside","RSI","J(KDJ)","ADX","P/E","P/E fwd","Consenso"]
+    else:
+        cols = ["#","Ticker","Precio","Fair Value","vs FV",
+                "Target 12M","Upside","RSI","J(KDJ)","ADX","P/E","P/E fwd","Consenso"]
+
+    head = "".join(f"<th>{c}</th>" for c in cols)
+    filas_html = []
+    for i, x in enumerate(lista, 1):
+        celdas = {
+            "#": str(i),
+            "Ticker": f'<a class="tk" href="{finviz_url(x["sym"])}" target="_blank">{x["sym"]}</a>',
+            "Score": str(x.get("score","")),
+            "Gatillos": construir_gatillos(x),
+            "Precio": x["precio_str"],
+            "Fair Value": x.get("fv","—"), "vs FV": x.get("fv_up","—"),
+            "Target 12M": x.get("target","—"), "Upside": x.get("upside","—"),
+            "RSI": x["rsi_str"], "J(KDJ)": x["j_str"], "ADX": x["adx_str"],
+            "P/E": x.get("pe_ttm","—"), "P/E fwd": x.get("pe_fwd","—"),
+            "Consenso": x.get("consenso","—"),
+        }
+        tds = []
+        for c in cols:
+            if c in ("#","Ticker"):
+                tds.append(f"<td>{celdas[c]}</td>")
+            else:
+                estilo = _color_estilo(c, celdas[c])
+                tds.append(f'<td style="{estilo}">{celdas[c]}</td>')
+        filas_html.append("<tr>" + "".join(tds) + "</tr>")
+
+    cuerpo = "".join(filas_html)
+    return '<div class="tw"><table><thead><tr>' + head + '</tr></thead><tbody>' + cuerpo + '</tbody></table></div>'
 
 # ======================================================================
 # TOP PICKS — TABLAS SEPARADAS POR PUNTAJE (4-5 · 3 · 2 · 1)
@@ -722,11 +777,8 @@ def tabla_puntaje(titulo, lista, color):
     if not lista:
         return
     st.markdown(f'<div style="font-family:Syne,sans-serif;font-weight:700;font-size:12px;color:{color};margin:14px 0 4px;letter-spacing:.05em;">{titulo} ({len(lista)})</div>', unsafe_allow_html=True)
-    rows = [fila(x) for x in sorted(lista, key=lambda x:(-x["score"], x["rsi"]))]
-    df = pd.DataFrame(rows).reset_index(drop=True); df.index = range(1,len(df)+1)
-    st.dataframe(pintar(df), use_container_width=True, column_config={
-        "Chart": st.column_config.LinkColumn("📊", help="Abrir en Finviz", display_text="ver", width="small")
-    })
+    ordenada = sorted(lista, key=lambda x:(-x["score"], x["rsi"]))
+    st.markdown(tabla_html(ordenada, con_score=True), unsafe_allow_html=True)
 
 g45 = [x for x in todos if x["score"] >= 4]
 g3  = [x for x in todos if x["score"] == 3]
@@ -748,11 +800,7 @@ def render_seccion(titulo, css, key, glosario):
     if not items:
         st.info("Sin candidatos en esta categoría hoy.")
         return
-    rows = [fila(x, con_score=False) for x in items]
-    df_ = pd.DataFrame(rows).reset_index(drop=True); df_.index = range(1,len(df_)+1)
-    st.dataframe(pintar(df_), use_container_width=True, column_config={
-        "Chart": st.column_config.LinkColumn("📊", help="Abrir en Finviz", display_text="ver", width="small")
-    })
+    st.markdown(tabla_html(items, con_score=False), unsafe_allow_html=True)
 
 GLOS_FUND = "<b>Fair Value</b>: promedio Graham + Fwd P/E + Crecimiento &nbsp;·&nbsp; <b>vs FV</b>: % vs Fair Value &nbsp;·&nbsp; <b>Target 12M</b>: objetivo analistas &nbsp;·&nbsp; <b>Upside</b>: % vs Target"
 
