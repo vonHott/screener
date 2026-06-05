@@ -188,14 +188,69 @@ def ticker_valido(t):
 # ======================================================================
 # FUNDAMENTALES — fair value, target 12M, P/E, P/B, P/S, consensus
 # ======================================================================
+def _num(s):
+    """Convierte string de Finviz a float. '17.45'->17.45, '20.65%'->0.2065, '-'->None, '5.04B'->5.04e9."""
+    if s is None: return None
+    s = str(s).strip()
+    if s in ("-", "", "—"): return None
+    try:
+        pct = s.endswith("%")
+        s2 = s.replace("%", "").replace(",", "").replace("$", "")
+        mult = 1.0
+        if s2 and s2[-1] in "BMK":
+            mult = {"B":1e9, "M":1e6, "K":1e3}[s2[-1]]
+            s2 = s2[:-1]
+        v = float(s2) * mult
+        return v/100.0 if pct else v
+    except Exception:
+        return None
+
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_fundamentales(sym):
-    """Datos fundamentales del ticker desde yfinance. Reintenta si Yahoo no responde."""
+def fetch_finviz(sym):
+    """Fundamentales desde Finviz (más completo, incluye crecimiento real EPS next 5Y)."""
+    # Finviz no soporta cripto/forex/futuros/internacionales
+    if any(x in sym for x in ['-USD','-F','=X','=F','.DE','.SW','.HK']):
+        return None
+    try:
+        from finvizfinance.quote import finvizfinance
+        # Finviz usa BRK-B con formato BRK-B; algunos con punto
+        fv_sym = sym.replace("-", "-")
+        stock = finvizfinance(fv_sym)
+        f = stock.ticker_fundament()
+        if not f or not isinstance(f, dict):
+            return None
+
+        # Target price y Recom
+        target = _num(f.get("Target Price"))
+        recom  = _num(f.get("Recom"))  # 1=Strong Buy .. 5=Sell
+
+        # Crecimiento: prioriza EPS next 5Y, luego EPS next Y
+        growth = _num(f.get("EPS next 5Y"))
+        if growth is None:
+            growth = _num(f.get("EPS next Y"))
+
+        return {
+            "target_mean":  target,
+            "n_analysts":   None,            # Finviz no da número de analistas
+            "rec_mean":     recom,
+            "pe_ttm":       _num(f.get("P/E")),
+            "pe_fwd":       _num(f.get("Forward P/E")),
+            "eps_ttm":      _num(f.get("EPS (ttm)")),
+            "fwd_eps":      None,             # se deriva si hace falta
+            "book_value":   _num(f.get("Book/sh")),
+            "growth":       growth,
+            "_fuente":      "finviz",
+        }
+    except Exception:
+        return None
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_yf(sym):
+    """Fundamentales desde yfinance (respaldo)."""
     import time
-    for intento in range(3):
+    for intento in range(2):
         try:
-            tk = yf.Ticker(sym)
-            info = tk.info
+            info = yf.Ticker(sym).info
             if info and len(info) >= 10 and (info.get("targetMeanPrice") or info.get("trailingPE") or info.get("trailingEps")):
                 return {
                     "target_mean":   info.get("targetMeanPrice"),
@@ -207,11 +262,36 @@ def fetch_fundamentales(sym):
                     "fwd_eps":       info.get("forwardEps"),
                     "book_value":    info.get("bookValue"),
                     "growth":        info.get("earningsGrowth"),
+                    "_fuente":       "yfinance",
                 }
         except Exception:
             pass
-        time.sleep(0.4 * (intento + 1))  # pausa escalonada: 0.4s, 0.8s, 1.2s
+        time.sleep(0.4 * (intento + 1))
     return None
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_fundamentales(sym):
+    """Finviz como fuente principal (más completa). yfinance como respaldo.
+    Rellena huecos de uno con el otro."""
+    fv = fetch_finviz(sym)
+    yf_data = None
+
+    # Si Finviz falló por completo, usar yfinance
+    if fv is None:
+        return fetch_yf(sym)
+
+    # Si Finviz no trae target o rec, completar con yfinance
+    if fv.get("target_mean") is None or fv.get("rec_mean") is None:
+        yf_data = fetch_yf(sym)
+        if yf_data:
+            if fv.get("target_mean") is None:
+                fv["target_mean"] = yf_data.get("target_mean")
+            if fv.get("rec_mean") is None:
+                fv["rec_mean"] = yf_data.get("rec_mean")
+            if fv.get("n_analysts") is None:
+                fv["n_analysts"] = yf_data.get("n_analysts")
+
+    return fv
 
 def calc_upside(precio_actual, target_mean):
     """% entre precio actual y Target 12M de analistas. Devuelve (texto, raw, bajo_target)."""
@@ -227,33 +307,46 @@ def calc_upside(precio_actual, target_mean):
 
 
 def calc_fair_value(fund, pe_hist, precio_actual):
-    """FV promedio de 3 modelos: Graham + Forward P/E + Crecimiento.
-    Devuelve (texto_fv, upside_txt, upside_raw)."""
+    """FV promedio de hasta 4 modelos: Graham + Forward P/E + Crecimiento + Target.
+    Robusto ante datos faltantes. Devuelve (texto_fv, upside_txt, upside_raw)."""
     eps   = fund.get("eps_ttm")
     bv    = fund.get("book_value")
     feps  = fund.get("fwd_eps")
     g     = fund.get("growth")
+    pe_fwd_val = fund.get("pe_fwd")
+    target = fund.get("target_mean")
 
     modelos = []
 
-    # Modelo 1: Graham √(22.5×EPS×BV)
+    # Modelo 1: Graham √(22.5×EPS×BV) — solo value rentable
     if eps and bv and eps > 0 and bv > 0:
         modelos.append(math.sqrt(22.5 * eps * bv))
 
-    # P/E histórico saneado (rango 8-40 para evitar extremos)
-    pe_ok = None
+    # P/E de referencia: usa P/E TTM, si falta usa Forward P/E, si falta usa 18 (mercado)
+    pe_ref = None
     if pe_hist and pe_hist > 0:
-        pe_ok = max(8, min(pe_hist, 40))
+        pe_ref = pe_hist
+    elif pe_fwd_val and pe_fwd_val > 0:
+        pe_ref = pe_fwd_val
+    else:
+        pe_ref = 18.0  # P/E promedio de mercado como último recurso
+    pe_ok = max(8, min(pe_ref, 40))  # saneado a rango 8-40
 
-    # Modelo 2: Forward EPS × P/E histórico propio
-    if feps and feps > 0 and pe_ok:
+    # Modelo 2: Forward EPS × P/E de referencia
+    if feps and feps > 0:
         modelos.append(feps * pe_ok)
 
     # Modelo 3: EPS proyectado 5A con crecimiento, descontado al 10%
-    if eps and eps > 0 and pe_ok:
+    if eps and eps > 0:
         gr = max(-0.05, min(g if g else 0.08, 0.25))
         eps_fut = eps * (1 + gr) ** 5
         modelos.append((eps_fut * pe_ok) / (1.10 ** 5))
+
+    # Modelo 4: si hay EPS forward pero no TTM, igual estima con forward
+    if (not eps or eps <= 0) and feps and feps > 0:
+        gr = max(-0.05, min(g if g else 0.08, 0.25))
+        eps_fut = feps * (1 + gr) ** 4
+        modelos.append((eps_fut * pe_ok) / (1.10 ** 4))
 
     if not modelos:
         return ("—", "—", None)
@@ -277,15 +370,17 @@ def calc_fair_value(fund, pe_hist, precio_actual):
         return ("—", "—", None)
 
 def consenso(rec_mean, n_analysts):
-    """recommendationMean (1-5) a texto + emoji + n analistas."""
-    if rec_mean is None or n_analysts is None or n_analysts == 0:
+    """recommendationMean (1-5) a texto + emoji. n analistas opcional."""
+    if rec_mean is None or rec_mean <= 0:
         return "—"
     if rec_mean <= 1.5:   tag = "🟢 Strong Buy"
     elif rec_mean <= 2.5: tag = "🟢 Buy"
     elif rec_mean <= 3.5: tag = "⚪ Hold"
     elif rec_mean <= 4.5: tag = "🔴 Sell"
     else:                 tag = "🔴 Strong Sell"
-    return f"{tag} ({int(n_analysts)})"
+    if n_analysts and n_analysts > 0:
+        return f"{tag} ({int(n_analysts)})"
+    return tag
 
 # ======================================================================
 # MARKET DATA
