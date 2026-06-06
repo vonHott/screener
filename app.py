@@ -437,6 +437,8 @@ def analizar_ticker(sym, df):
     t14=pd.concat([hl,hpc,lpc],axis=1).max(axis=1).rolling(14).sum().replace(0,1e-8)
     pdi=pd.Series(dmp,index=df.index).rolling(14).sum()*100/t14
     mdi=pd.Series(dmm,index=df.index).rolling(14).sum()*100/t14
+    df['PDI'] = pdi
+    df['MDI'] = mdi
     df['ADX'] = (abs(pdi-mdi)/(pdi+mdi).replace(0,1e-8)*100).rolling(9).mean()
 
     # ── KDJ ──
@@ -490,7 +492,7 @@ def analizar_ticker(sym, df):
         vol_ok
     )
 
-    # ── PUNTO 3: TOQUE DE SOPORTE — Bollinger inf. O EMA 20/50/200/325 desde arriba ──
+    # ── PUNTO 3: TOQUE DE SOPORTE — Bollinger inf. O EMA 50/200/325 desde arriba ──
     ma20_v  = float(df['MA20'].iloc[-1])
     ma50_v  = float(df['MA50'].iloc[-1])
     ma200_v = float(df['MA200'].iloc[-1])
@@ -501,7 +503,6 @@ def analizar_ticker(sym, df):
     bb_dn   = float(df['BB_DN'].iloc[-1])
 
     toca_ema = (
-        (low_v <= ma20_v  * 1.015 and precio > ma20_v  * 0.985) or
         (low_v <= ma50_v  * 1.015 and precio > ma50_v  * 0.985) or
         (low_v <= ma200_v * 1.015 and precio > ma200_v * 0.985) or
         (low_v <= ma325_v * 1.015 and precio > ma325_v * 0.985)
@@ -510,14 +511,28 @@ def analizar_ticker(sym, df):
     # Toque válido solo con volumen y cierre sobre mínimo de ayer
     p_toque = (toca_ema or toca_bb) and cierre_sobre_min and vol_ok
 
-    # ── PUNTO 4-5: VALOR (se calcula en fetch_fund, +1 o +2) ──
-    # Aqui solo registramos el score tecnico de 3 puntos.
-    # El bonus de valor (1 o 2) se suma despues en fetch_fund.
+    # ── PUNTO 4: DIRECCIÓN DI+ > DI- (cambio real vs trampa bajista) ──
+    pdi_v = float(df['PDI'].iloc[-1]) if not pd.isna(df['PDI'].iloc[-1]) else 0
+    mdi_v = float(df['MDI'].iloc[-1]) if not pd.isna(df['MDI'].iloc[-1]) else 0
+    p_di = pdi_v > mdi_v   # DI+ dominante = presión alcista confirmada
+
+    # ── PUNTO 5-6: VALOR (se calcula en fetch_fund, +1 o +2) ──
 
     if not (p_rsi or p_giro or p_toque):
         return None
 
-    score_tecnico = sum([p_rsi, p_giro, p_toque])
+    # ── TENDENCIA: toro (↗) / oso (↘) / "" resto ──
+    ma20_t  = ma20_v
+    ma200_b = float(df['MA200'].iloc[-2]) if len(df) > 1 else ma200_v
+    ma50_sube = ma50_v > float(df['MA50'].iloc[-6]) if len(df) > 6 else False
+    es_toro = precio > ma50_v and ma50_sube
+    es_oso  = precio < ma200_v and ma200_v < ma200_b and precio < ma20_t
+    if es_toro:   tendencia = "toro"
+    elif es_oso:  tendencia = "oso"
+    else:         tendencia = ""
+
+    # Score técnico: RSI + Giro + Toque + DI = hasta 4 puntos técnicos
+    score_tecnico = sum([p_rsi, p_giro, p_toque, p_di])
 
     return {
         "sym": sym,
@@ -530,6 +545,8 @@ def analizar_ticker(sym, df):
         "p_rsi":   p_rsi,
         "p_giro":  p_giro,
         "p_toque": p_toque,
+        "p_di":    p_di,
+        "tendencia": tendencia,
         # detalle de qué soporte tocó (para mostrar)
         "toca_ema": toca_ema,
         "toca_bb":  toca_bb,
@@ -765,9 +782,12 @@ prog.empty()
 n_rsi   = sum(1 for x in todos if x["p_rsi"])
 n_giro  = sum(1 for x in todos if x["p_giro"])
 n_toque = sum(1 for x in todos if x["p_toque"])
+n_di    = sum(1 for x in todos if x.get("p_di"))
 n_valor = sum(1 for x in todos if x.get("valor_pts",0) > 0)
+n_toro  = sum(1 for x in todos if x.get("tendencia")=="toro")
+n_oso   = sum(1 for x in todos if x.get("tendencia")=="oso")
 
-st.markdown(f'<div style="text-align:center;color:var(--muted);font-size:12px;padding:8px 0 16px;letter-spacing:.05em;">✅ {len(WATCHLIST)} tickers · {len(todos)} candidatos · 🔴 {n_rsi} RSI&lt;35 · 🟣 {n_giro} giro+MACD · 🟡 {n_toque} soporte · 💎 {n_valor} valor</div>', unsafe_allow_html=True)
+st.markdown(f'<div style="text-align:center;color:var(--muted);font-size:12px;padding:8px 0 16px;letter-spacing:.05em;">✅ {len(WATCHLIST)} tickers · {len(todos)} candidatos · 🔴 {n_rsi} RSI&lt;35 · 🟣 {n_giro} giro · 🟡 {n_toque} soporte · 🟢 {n_di} DI+ · 💎 {n_valor} valor · <span style="color:#00e5a0">↗ {n_toro}</span> · <span style="color:#ff4d6d">↘ {n_oso}</span></div>', unsafe_allow_html=True)
 
 # ======================================================================
 # HELPER: construir filas con todas las columnas
@@ -779,6 +799,7 @@ def construir_gatillos(x):
     if x["p_toque"]:
         if x.get("toca_bb"): gs.append("🔵BB")
         else:                gs.append("🟡EMA")
+    if x.get("p_di"): gs.append("🟢DI+")
     vp = x.get("valor_pts",0)
     if vp == 2:   gs.append("💎VALOR×2")
     elif vp == 1: gs.append("💎VALOR×1")
@@ -814,7 +835,8 @@ def _color_estilo(col, val):
     if col == "Score":
         try:
             n=int(float(s))
-            if n>=4: return "color:#00e5a0;font-weight:700;text-align:center"
+            if n>=5: return "color:#00e5a0;font-weight:700;text-align:center"
+            if n==4: return "color:#00d4ff;font-weight:700;text-align:center"
             if n==3: return "color:#00d4ff;font-weight:600;text-align:center"
             if n==2: return "color:#b48cff;font-weight:600;text-align:center"
         except: pass
@@ -833,6 +855,10 @@ def _valor_sort(col, raw, idx):
         # ordenar alfabetico: usar el simbolo
         m = _re2.search(r'>([^<]+)</a>', s)
         return m.group(1) if m else s
+    if col == "T":
+        if "\u2197" in s: return 2   # flecha arriba = toro
+        if "\u2198" in s: return 0   # flecha abajo = oso
+        return 1
     if col in ("Gatillos","Consenso"):
         # Consenso: ordenar por nivel (Strong Buy=5 ... Sell=1)
         if "Strong Buy" in s: return 5
@@ -853,10 +879,10 @@ def tabla_html(lista, con_score=True):
     tid = f"tw{_TABLA_N[0]}"
 
     if con_score:
-        cols = ["#","Ticker","Score","Gatillos","Precio","Fair Value","vs FV",
+        cols = ["#","Ticker","T","Score","Gatillos","Precio","Fair Value","vs FV",
                 "Target 12M","Upside","RSI","J(KDJ)","ADX","P/E","P/E fwd","Consenso"]
     else:
-        cols = ["#","Ticker","Precio","Fair Value","vs FV",
+        cols = ["#","Ticker","T","Precio","Fair Value","vs FV",
                 "Target 12M","Upside","RSI","J(KDJ)","ADX","P/E","P/E fwd","Consenso"]
 
     head = "".join(f'<th>{c}<span class="ar"></span></th>' for c in cols)
@@ -866,6 +892,7 @@ def tabla_html(lista, con_score=True):
         celdas = {
             "#": str(i),
             "Ticker": f'<a class="tk" href="{finviz_url(x["sym"])}" target="_blank">{x["sym"]}</a>',
+            "T": ('<span style="color:#00e5a0;font-weight:700;font-size:14px">\u2197</span>' if x.get("tendencia")=="toro" else ('<span style="color:#ff4d6d;font-weight:700;font-size:14px">\u2198</span>' if x.get("tendencia")=="oso" else '<span style="color:#2a3340">·</span>')),
             "Score": str(x.get("score","")),
             "Gatillos": construir_gatillos(x),
             "Precio": x["precio_str"],
@@ -880,6 +907,8 @@ def tabla_html(lista, con_score=True):
             sval = _valor_sort(c, celdas[c], i)
             if c in ("#","Ticker"):
                 tds.append(f'<td data-s="{sval}">{celdas[c]}</td>')
+            elif c == "T":
+                tds.append(f'<td data-s="{sval}" style="text-align:center">{celdas[c]}</td>')
             else:
                 estilo = _color_estilo(c, celdas[c])
                 tds.append(f'<td data-s="{sval}" style="{estilo}">{celdas[c]}</td>')
@@ -893,13 +922,14 @@ def tabla_html(lista, con_score=True):
 # ======================================================================
 st.markdown('<div class="sec sec-os">⭐ TOP PICKS POR PUNTAJE</div>', unsafe_allow_html=True)
 st.markdown("""<div class="glosario">
-<b>5 puntos posibles</b> &nbsp;·&nbsp;
-<b>🔴RSI</b> RSI&lt;35 sobreventa &nbsp;·&nbsp;
-<b>🟣GIRO</b> giro KDJ + cruce MACD + cierre&gt;mín ayer + volumen &nbsp;·&nbsp;
-<b>🟡EMA / 🔵BB</b> toque EMA 20/50/200/325 o Bollinger + cierre&gt;mín ayer + volumen &nbsp;·&nbsp;
-<b>💎VALOR×1</b> Fair Value ≥+15% · <b>💎VALOR×2</b> FV Y Target 12M ambos ≥+15% &nbsp;·&nbsp;
-<b>Fair Value</b> promedio de 3 modelos (Graham + Fwd P/E + Crecimiento) &nbsp;·&nbsp;
-<b>Upside</b> % vs Target 12M analistas
+<b>6 puntos posibles</b> &nbsp;·&nbsp;
+<b>T</b> <span style="color:#00e5a0">↗</span> toro (precio&gt;MA50 subiendo) · <span style="color:#ff4d6d">↘</span> oso (bajista crítico, rebote de riesgo) &nbsp;·&nbsp;
+<b>🔴RSI</b> RSI&lt;35 &nbsp;·&nbsp;
+<b>🟣GIRO</b> giro KDJ + MACD + cierre&gt;mín ayer + volumen &nbsp;·&nbsp;
+<b>🟡EMA / 🔵BB</b> toque EMA 50/200/325 o Bollinger + cierre&gt;mín + volumen &nbsp;·&nbsp;
+<b>🟢DI+</b> DI+&gt;DI- (presión alcista, separa giro real de trampa) &nbsp;·&nbsp;
+<b>💎VALOR×1</b> FV ≥+15% · <b>💎VALOR×2</b> FV Y Target ambos ≥+15% &nbsp;·&nbsp;
+<b>Fair Value</b> promedio 3 modelos · <b>Upside</b> % vs Target
 </div>""", unsafe_allow_html=True)
 
 def tabla_puntaje(titulo, lista, color):
@@ -909,12 +939,14 @@ def tabla_puntaje(titulo, lista, color):
     ordenada = sorted(lista, key=lambda x:(-x["score"], x["rsi"]))
     st.markdown(tabla_html(ordenada, con_score=True), unsafe_allow_html=True)
 
-g45 = [x for x in todos if x["score"] >= 4]
+g56 = [x for x in todos if x["score"] >= 5]
+g4  = [x for x in todos if x["score"] == 4]
 g3  = [x for x in todos if x["score"] == 3]
 g2  = [x for x in todos if x["score"] == 2]
 g1  = [x for x in todos if x["score"] == 1]
 
-tabla_puntaje("🏆 PUNTAJE 4-5 — MÁXIMA CONVICCIÓN", g45, "#00e5a0")
+tabla_puntaje("🏆 PUNTAJE 5-6 — MÁXIMA CONVICCIÓN", g56, "#00e5a0")
+tabla_puntaje("🥇 PUNTAJE 4 — MUY FUERTE", g4, "#00d4ff")
 tabla_puntaje("🥈 PUNTAJE 3 — FUERTE", g3, "#00d4ff")
 tabla_puntaje("🥉 PUNTAJE 2 — MODERADO", g2, "#b48cff")
 tabla_puntaje("• PUNTAJE 1 — VIGILANCIA", g1, "#718096")
@@ -942,8 +974,12 @@ render_seccion(
     "<b>Criterio</b>: KDJ girando/cruzando + MACD gira/cruza + cierre sobre mínimo de ayer + volumen ≥85% &nbsp;·&nbsp; " + GLOS_FUND
 )
 render_seccion(
-    "🟡 TOCANDO SOPORTE — EMA 20/50/200/325 o BOLLINGER", "sec-mas", "p_toque",
-    "<b>Criterio</b>: toca EMA (20/50/200/325) o banda inferior Bollinger desde arriba + cierre sobre mínimo de ayer + volumen ≥85% &nbsp;·&nbsp; " + GLOS_FUND
+    "🟡 TOCANDO SOPORTE — EMA 50/200/325 o BOLLINGER", "sec-mas", "p_toque",
+    "<b>Criterio</b>: toca EMA 50/200/325 o banda inferior Bollinger desde arriba + cierre sobre mínimo de ayer + volumen ≥85% &nbsp;·&nbsp; " + GLOS_FUND
+)
+render_seccion(
+    "🟢 PRESIÓN ALCISTA — DI+ > DI-", "sec-cr", "p_di",
+    "<b>Criterio</b>: DI+ domina sobre DI- (componentes del ADX) — la presión compradora supera a la vendedora, separa giros reales de trampas bajistas &nbsp;·&nbsp; " + GLOS_FUND
 )
 
 
