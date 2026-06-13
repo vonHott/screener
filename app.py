@@ -127,6 +127,11 @@ import urllib.request, json as _json
 
 GIST_ID = "00c849548b7f82e35530eb837df20a3a"
 
+def finviz_url(sym):
+    """URL de finviz para el ticker (limpia sufijos no soportados)."""
+    base = sym.replace("-USD","").replace("=F","").replace("=X","")
+    return f"https://finviz.com/quote.ashx?t={base}&p=d"
+
 def _gist_token():
     try:
         return st.secrets["GITHUB_TOKEN"]
@@ -826,11 +831,6 @@ def construir_gatillos(x):
     if vp == 2:   gs.append("💎VALOR×2")
     elif vp == 1: gs.append("💎VALOR×1")
     return " ".join(gs)
-
-def finviz_url(sym):
-    """URL de finviz para el ticker (limpia sufijos no soportados)."""
-    base = sym.replace("-USD","").replace("=F","").replace("=X","")
-    return f"https://finviz.com/quote.ashx?t={base}&p=d"
 
 def _color_estilo(col, val):
     """Devuelve estilo inline segun la columna y valor (replica cr/cj/cs/csc)."""
