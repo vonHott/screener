@@ -4,7 +4,7 @@ snapshot.py — Foto diaria de las TOP PICKS (score >= 4) del Rebote Screener.
 Corre en GitHub Actions tras el cierre de NY. Guarda en el Gist con memoria de 15 días.
 Autocontenido: no depende de app_mobile.py.
 """
-import os, json, urllib.request
+import os, json, math, urllib.request
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
 import yfinance as yf
