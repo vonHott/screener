@@ -672,7 +672,43 @@ for t in list(TICKERS) + compartidos:
         _vistos.add(t)
 
 # ======================================================================
-# ESCANEO AUTOMATICO — batch download + threading
+# HISTORIAL 15 DIAS - fotos diarias de TOP PICKS (GitHub Actions)
+# ======================================================================
+def leer_historial():
+    """Lee las fotos diarias guardadas por el snapshot automatico."""
+    try:
+        url = f"https://api.github.com/gists/{GIST_ID}"
+        req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            data = _json.loads(r.read().decode())
+        if "historial.json" in data["files"]:
+            return _json.loads(data["files"]["historial.json"]["content"])
+    except Exception:
+        pass
+    return []
+
+_hist = leer_historial()
+_label = f"\U0001F4F8 Historial TOP PICKS - ultimos {len(_hist)} dias (cierre NY)" if _hist else "\U0001F4F8 Historial TOP PICKS - se llena solo tras el cierre de NY"
+with st.expander(_label, expanded=False):
+    st.markdown('<div style="font-size:11px;color:#4a5568;margin-bottom:8px;">Foto automatica de las TOP (score >= 4) al cierre de NY. Memoria de 15 dias.</div>', unsafe_allow_html=True)
+    if not _hist:
+        st.markdown('<div style="color:#718096;font-size:12px;padding:8px 0;">Aun no hay fotos guardadas. La primera aparecera tras la proxima ejecucion automatica (tras el cierre de NY, lun-vie).</div>', unsafe_allow_html=True)
+    else:
+        for foto in reversed(_hist):
+            fecha = foto.get("fecha","?")
+            tops = foto.get("tops",[])
+            if not tops:
+                st.markdown(f'<div style="color:#718096;font-size:12px;margin:6px 0;"><b>{fecha}</b> - sin TOP PICKS</div>', unsafe_allow_html=True)
+                continue
+            filas = ""
+            for t in tops:
+                filas += '<tr><td style="text-align:left"><a class="tk" href="' + finviz_url(t["sym"]) + '" target="_blank">' + t["sym"] + '</a></td><td style="text-align:center;color:#00e5a0;font-weight:700">' + str(t["score"]) + '</td><td style="font-size:10px">' + t.get("gatillos","") + '</td><td>' + t.get("precio","-") + '</td><td>' + t.get("fv","-") + '</td><td>' + t.get("upside","-") + '</td><td>' + t.get("rsi","-") + '</td><td style="font-size:10px">' + t.get("consenso","-") + '</td></tr>'
+            titulo = '<div style="font-family:Syne,sans-serif;font-weight:700;color:#00d4ff;font-size:13px;margin-bottom:4px;">' + fecha + ' - ' + str(len(tops)) + ' picks</div>'
+            tabla = '<div class="tw"><table><thead><tr><th style="text-align:left">Ticker</th><th style="text-align:center">Sc</th><th>Gatillos</th><th>Precio</th><th>FV</th><th>Upside</th><th>RSI</th><th>Consenso</th></tr></thead><tbody>' + filas + '</tbody></table></div>'
+            st.markdown('<div style="margin:10px 0;">' + titulo + tabla + '</div>', unsafe_allow_html=True)
+
+# ======================================================================
+# ESCANEO AUTOMATICO - batch download + threading
 # ======================================================================
 prog = st.progress(0, text=f"Descargando {len(WATCHLIST)} tickers en batch...")
 
