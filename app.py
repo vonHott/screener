@@ -480,13 +480,8 @@ def analizar_ticker(sym, df):
     adx_v = float(df['ADX'].iloc[-1]) if not pd.isna(df['ADX'].iloc[-1]) else 0
     precio= float(df['Close'].iloc[-1])
 
-    # ── ATR% (volatilidad esperada diaria) — clave para trading de días ──
+    # ── ATR 14d en dólares (Wilder, estándar igual que RSI) — para SL/TP ──
     atr_abs = float(df['ATR'].iloc[-1]) if not pd.isna(df['ATR'].iloc[-1]) else 0
-    atr_pct = (atr_abs / precio * 100) if precio > 0 else 0
-
-    # ── Liquidez: volumen-dólar promedio 20d (en millones USD) ──
-    vol_ma_v = float(df['VOL_MA'].iloc[-1]) if not pd.isna(df['VOL_MA'].iloc[-1]) else 0
-    dolar_vol_m = (vol_ma_v * precio) / 1e6   # millones USD/día
 
     ma50_v  = float(df['MA50'].iloc[-1])
     ma200_v = float(df['MA200'].iloc[-1])
@@ -554,11 +549,8 @@ def analizar_ticker(sym, df):
         "p_giro":  p_giro,
         "p_toque": p_toque,
         "p_di":    p_di,
-        "atr_pct": atr_pct,
-        "atr_str": f"{atr_pct:.1f}%" if atr_pct > 0 else "—",
-        "dolar_vol_m": dolar_vol_m,
-        "liq_str": (f"${dolar_vol_m:.0f}M" if dolar_vol_m >= 1 else f"${dolar_vol_m*1000:.0f}K"),
-        "liq_baja": dolar_vol_m < 20,   # < 20M USD/día = baja liquidez (marca, no descarta)
+        "atr_abs": atr_abs,
+        "atr_str": f"${atr_abs:.2f}" if atr_abs > 0 else "—",
         # detalle de qué soporte tocó (para mostrar)
         "toca_ema": toca_ema,
         "toca_bb":  toca_bb,
@@ -900,21 +892,8 @@ def _color_estilo(col, val):
             if n==2: return "color:#b48cff;font-weight:600;text-align:center"
         except: pass
         return "color:#4a5568;text-align:center"
-    if col == "ATR%":
-        try:
-            a=float(s.replace("%",""))
-            if a >= 3: return "color:#00e5a0;font-weight:600"   # buena para swing días
-            if a < 1.2: return "color:#4a5568"                   # poco movimiento
-        except: pass
-        return "color:#a0aec0"
-    if col == "Liq":
-        # baja liquidez (K o pocos M) = ámbar de advertencia
-        if "K" in s: return "color:#ffd166;font-weight:600"
-        try:
-            m=float(s.replace("$","").replace("M",""))
-            if m < 20: return "color:#ffd166"
-        except: pass
-        return "color:#4a5568"
+    if col == "ATR":
+        return "color:#a0aec0"   # informativo, en dólares (para SL/TP)
     return ""
 
 import re as _re2
@@ -929,13 +908,8 @@ def _valor_sort(col, raw, idx):
         # ordenar alfabetico: usar el simbolo
         m = _re2.search(r'>([^<]+)</a>', s)
         return m.group(1) if m else s
-    if col == "ATR%":
-        try: return float(s.replace("%",""))
-        except: return -1
-    if col == "Liq":
-        try:
-            if "K" in s: return float(s.replace("$","").replace("K",""))/1000.0
-            return float(s.replace("$","").replace("M",""))
+    if col == "ATR":
+        try: return float(s.replace("$",""))
         except: return -1
     if col in ("Gatillos","Consenso"):
         # Consenso: ordenar por nivel (Strong Buy=5 ... Sell=1)
@@ -958,10 +932,10 @@ def tabla_html(lista, con_score=True):
 
     if con_score:
         cols = ["#","Ticker","Score","Gatillos","Precio","Fair Value","vs FV",
-                "Target 12M","Upside","RSI","J(KDJ)","ADX","ATR%","Liq","P/E","P/E fwd","Consenso"]
+                "Target 12M","Upside","RSI","J(KDJ)","ADX","ATR","P/E","P/E fwd","Consenso"]
     else:
         cols = ["#","Ticker","Precio","Fair Value","vs FV",
-                "Target 12M","Upside","RSI","J(KDJ)","ADX","ATR%","Liq","P/E","P/E fwd","Consenso"]
+                "Target 12M","Upside","RSI","J(KDJ)","ADX","ATR","P/E","P/E fwd","Consenso"]
 
     head = "".join(f'<th>{c}<span class="ar"></span></th>' for c in cols)
 
@@ -976,7 +950,7 @@ def tabla_html(lista, con_score=True):
             "Fair Value": x.get("fv","—"), "vs FV": x.get("fv_up","—"),
             "Target 12M": x.get("target","—"), "Upside": x.get("upside","—"),
             "RSI": x["rsi_str"], "J(KDJ)": x["j_str"], "ADX": x["adx_str"],
-            "ATR%": x.get("atr_str","—"), "Liq": x.get("liq_str","—"),
+            "ATR": x.get("atr_str","—"),
             "P/E": x.get("pe_ttm","—"), "P/E fwd": x.get("pe_fwd","—"),
             "Consenso": x.get("consenso","—"),
         }
@@ -1033,8 +1007,7 @@ st.markdown("""<div class="glosario">
 <b>🟡EMA / 🔵BB</b> toque EMA 50/200/325 o Bollinger + cierre&gt;mín + volumen &nbsp;·&nbsp;
 <b>🟢DI+</b> DI+&gt;DI- (presión alcista, separa giro real de trampa) &nbsp;·&nbsp;
 <b>💎VALOR</b> FV ≥+15% (suma 1) · <b>💎💎</b> FV Y Target ambos ≥+15% (distintivo, no suma extra) &nbsp;·&nbsp;
-<b>ATR%</b> volatilidad diaria esperada (verde ≥3% = buena para swing días) &nbsp;·&nbsp;
-<b>Liq</b> volumen-dólar/día (ámbar &lt;$20M = cuidado slippage) &nbsp;·&nbsp;
+<b>ATR</b> rango medio diario en $ (14d, Wilder) — úsalo para fijar Stop Loss y Take Profit &nbsp;·&nbsp;
 <b>Fair Value</b> promedio 3 modelos · <b>Upside</b> % vs Target
 </div>""", unsafe_allow_html=True)
 
