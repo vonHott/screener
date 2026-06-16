@@ -201,23 +201,23 @@ def calc_fair_value(fund, pe_hist, precio_actual):
         pe_ref = pe_fwd_val
     else:
         pe_ref = 18.0  # P/E promedio de mercado como último recurso
-    pe_ok = max(8, min(pe_ref, 55))  # saneado a rango 8-55
+    pe_ok = max(8, min(pe_ref, 45))  # rango 8-45 (punto medio)
 
     # Modelo 2: Forward EPS × P/E de referencia
     if feps and feps > 0:
         modelos.append(feps * pe_ok)
 
-    # Modelo 3: EPS proyectado 5A con crecimiento (cap 35%), descontado al 9%
+    # Modelo 3: EPS proyectado 5A con crecimiento (cap 28%), descontado al 9.5%
     if eps and eps > 0:
-        gr = max(-0.05, min(g if g else 0.08, 0.35))
+        gr = max(-0.05, min(g if g else 0.08, 0.28))
         eps_fut = eps * (1 + gr) ** 5
-        modelos.append((eps_fut * pe_ok) / (1.09 ** 5))
+        modelos.append((eps_fut * pe_ok) / (1.095 ** 5))
 
     # Modelo 4: si hay EPS forward pero no TTM, igual estima con forward
     if (not eps or eps <= 0) and feps and feps > 0:
-        gr = max(-0.05, min(g if g else 0.08, 0.35))
+        gr = max(-0.05, min(g if g else 0.08, 0.28))
         eps_fut = feps * (1 + gr) ** 4
-        modelos.append((eps_fut * pe_ok) / (1.09 ** 4))
+        modelos.append((eps_fut * pe_ok) / (1.095 ** 4))
 
     if not modelos:
         if target and target > 0:
@@ -234,8 +234,8 @@ def calc_fair_value(fund, pe_hist, precio_actual):
 
     # Acercar al consenso si el modelo se aleja >40% del Target
     if target and target > 0:
-        if abs(fv - target) / target > 0.40:
-            fv = (fv + target) / 2
+        if abs(fv - target) / target > 0.50:
+            fv = 0.65 * fv + 0.35 * target
     up = (fv - precio_actual) / precio_actual * 100
     if up >= 15:   txt = f"🟢 +{up:.0f}%"
     elif up >= 0:  txt = f"⚪ +{up:.0f}%"
