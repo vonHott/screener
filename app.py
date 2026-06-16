@@ -313,7 +313,7 @@ def calc_upside(precio_actual, target_mean):
 
 
 def calc_fair_value(fund, pe_hist, precio_actual):
-    """FV promedio de hasta 4 modelos: Graham + Forward P/E + Crecimiento + Target.
+    """FV promedio de modelos de múltiplos: Forward P/E + Crecimiento descontado.
     Robusto ante datos faltantes. Devuelve (texto_fv, upside_txt, upside_raw)."""
     eps   = fund.get("eps_ttm")
     bv    = fund.get("book_value")
@@ -324,9 +324,7 @@ def calc_fair_value(fund, pe_hist, precio_actual):
 
     modelos = []
 
-    # Modelo 1: Graham √(22.5×EPS×BV) — solo value rentable
-    if eps and bv and eps > 0 and bv > 0:
-        modelos.append(math.sqrt(22.5 * eps * bv))
+    # (Graham eliminado del promedio: castigaba demasiado a growth/tech sin book value)
 
     # P/E de referencia: usa P/E TTM, si falta usa Forward P/E, si falta usa 18 (mercado)
     pe_ref = None
@@ -336,44 +334,50 @@ def calc_fair_value(fund, pe_hist, precio_actual):
         pe_ref = pe_fwd_val
     else:
         pe_ref = 18.0  # P/E promedio de mercado como último recurso
-    pe_ok = max(8, min(pe_ref, 40))  # saneado a rango 8-40
+    pe_ok = max(8, min(pe_ref, 55))  # saneado a rango 8-55 (sube de 40: no castigar calidad)
 
     # Modelo 2: Forward EPS × P/E de referencia
     if feps and feps > 0:
         modelos.append(feps * pe_ok)
 
-    # Modelo 3: EPS proyectado 5A con crecimiento, descontado al 10%
+    # Modelo 3: EPS proyectado 5A con crecimiento (cap 35%), descontado al 9%
     if eps and eps > 0:
-        gr = max(-0.05, min(g if g else 0.08, 0.25))
+        gr = max(-0.05, min(g if g else 0.08, 0.35))
         eps_fut = eps * (1 + gr) ** 5
-        modelos.append((eps_fut * pe_ok) / (1.10 ** 5))
+        modelos.append((eps_fut * pe_ok) / (1.09 ** 5))
 
     # Modelo 4: si hay EPS forward pero no TTM, igual estima con forward
     if (not eps or eps <= 0) and feps and feps > 0:
-        gr = max(-0.05, min(g if g else 0.08, 0.25))
+        gr = max(-0.05, min(g if g else 0.08, 0.35))
         eps_fut = feps * (1 + gr) ** 4
-        modelos.append((eps_fut * pe_ok) / (1.10 ** 4))
+        modelos.append((eps_fut * pe_ok) / (1.09 ** 4))
 
     if not modelos:
+        # Sin EPS utilizable: si hay Target de analistas, úsalo como referencia
+        if target and target > 0:
+            fv = target
+            up = (fv - precio_actual) / precio_actual * 100
+            if up >= 15:   txt = f"🟢 +{up:.0f}%"
+            elif up >= 0:  txt = f"⚪ +{up:.0f}%"
+            elif up >= -15: txt = f"🟡 {up:.0f}%"
+            else:          txt = f"🔴 {up:.0f}%"
+            return (f"${fv:.0f}", txt, up)
         return ("—", "—", None)
 
     fv = sum(modelos) / len(modelos)
+
+    # Ajuste: si el FV calculado se aleja MUCHO del Target de analistas (>40%),
+    # promediar con el Target para acercarse al consenso (reduce sesgo extremo).
+    if target and target > 0:
+        desvio = abs(fv - target) / target
+        if desvio > 0.40:
+            fv = (fv + target) / 2   # punto medio entre modelo y analistas
     up = (fv - precio_actual) / precio_actual * 100
     if up >= 15:   txt = f"🟢 +{up:.0f}%"
     elif up >= 0:  txt = f"⚪ +{up:.0f}%"
     elif up >= -15: txt = f"🟡 {up:.0f}%"
     else:          txt = f"🔴 {up:.0f}%"
     return (f"${fv:.0f}", txt, up)
-    try:
-        fv = math.sqrt(22.5 * eps_ttm * book_value)
-        up = (fv - precio_actual) / precio_actual * 100
-        if up >= 15:   txt = f"🟢 +{up:.0f}%"
-        elif up >= 0:  txt = f"⚪ +{up:.0f}%"
-        elif up >= -15: txt = f"🟡 {up:.0f}%"
-        else:          txt = f"🔴 {up:.0f}%"
-        return (f"${fv:.0f}", txt, up)
-    except:
-        return ("—", "—", None)
 
 def consenso(rec_mean, n_analysts):
     """recommendationMean (1-5) a texto + emoji. n analistas opcional."""
@@ -393,27 +397,70 @@ def consenso(rec_mean, n_analysts):
 # ======================================================================
 @st.cache_data(ttl=300, show_spinner=False)
 def get_market_data():
-    indices = {"S&P 500":"^GSPC","Nasdaq":"^NDX","Dow":"^DJI","Russell":"^RUT"}
+    import math as _m
+    # ^GSPC/^IXIC/^DJI fallan a veces uno por uno; descargar en batch es más fiable.
+    indices = {"S&P 500":"^GSPC","Nasdaq":"^IXIC","Dow":"^DJI","Russell":"^RUT"}
     result = {}
-    for name, sym in indices.items():
+
+    def _pct_de(h):
+        """Extrae (precio, %) de un history, o None si no hay datos válidos."""
         try:
-            h = yf.Ticker(sym).history(period="5d",interval="1d")
-            if len(h)>=2:
-                prev=float(h['Close'].iloc[-2]); curr=float(h['Close'].iloc[-1])
-                result[name]={"price":curr,"pct":(curr-prev)/prev*100}
-        except: result[name]={"price":0,"pct":0}
-    vix=0
+            cl = h['Close'].dropna()
+            if len(cl) >= 2:
+                prev = float(cl.iloc[-2]); curr = float(cl.iloc[-1])
+                if prev > 0 and not _m.isnan(curr) and not _m.isnan(prev):
+                    return curr, (curr - prev) / prev * 100
+        except Exception:
+            pass
+        return None
+
+    # Intento 1: batch (una sola petición para todos los índices)
     try:
-        h=yf.Ticker("^VIX").history(period="5d",interval="1d")
-        if not h.empty: vix=float(h['Close'].iloc[-1])
-    except: pass
-    btc_pct=0; btc_price=0
+        syms = list(indices.values())
+        batch = yf.download(syms, period="5d", interval="1d",
+                            group_by="ticker", progress=False, threads=True)
+        for name, sym in indices.items():
+            try:
+                h = batch[sym] if sym in batch.columns.get_level_values(0) else None
+                r = _pct_de(h) if h is not None else None
+                if r: result[name] = {"price": r[0], "pct": r[1]}
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Intento 2: lo que falte, individual (fallback)
+    for name, sym in indices.items():
+        if name in result:
+            continue
+        try:
+            h = yf.Ticker(sym).history(period="5d", interval="1d")
+            r = _pct_de(h)
+            if r: result[name] = {"price": r[0], "pct": r[1]}
+        except Exception:
+            pass
+
+    # Garantizar que SIEMPRE exista la clave (evita "nan" en la UI)
+    for name in indices:
+        if name not in result or result[name].get("price") in (None, 0) or _m.isnan(result[name].get("price", 0)):
+            result.setdefault(name, {"price": None, "pct": None})
+
+    vix = None
     try:
-        h=yf.Ticker("BTC-USD").history(period="5d",interval="1d")
-        if len(h)>=2:
-            btc_price=float(h['Close'].iloc[-1])
-            btc_pct=(btc_price-float(h['Close'].iloc[-2]))/float(h['Close'].iloc[-2])*100
-    except: pass
+        h = yf.Ticker("^VIX").history(period="5d", interval="1d")
+        cl = h['Close'].dropna()
+        if len(cl) >= 1: vix = float(cl.iloc[-1])
+    except Exception: pass
+
+    btc_pct = None; btc_price = None
+    try:
+        h = yf.Ticker("BTC-USD").history(period="5d", interval="1d")
+        cl = h['Close'].dropna()
+        if len(cl) >= 2:
+            btc_price = float(cl.iloc[-1])
+            btc_pct = (btc_price - float(cl.iloc[-2])) / float(cl.iloc[-2]) * 100
+    except Exception: pass
+
     return result, vix, btc_pct, btc_price
 
 # ======================================================================
@@ -621,24 +668,30 @@ st.markdown("""
 indices, vix, btc_pct, btc_price = get_market_data()
 st.markdown('<div class="idx-grid">', unsafe_allow_html=True)
 for name, data in indices.items():
-    p=data["price"]; pct=data["pct"]
+    p=data.get("price"); pct=data.get("pct")
+    if p is None or pct is None:
+        # dato no disponible: mostrar guion en vez de "nan"
+        st.markdown(f'<div class="idx-card"><div class="idx-label">{name}</div><div class="idx-price" style="color:#4a5568">—</div><div style="color:#4a5568">s/d</div></div>', unsafe_allow_html=True)
+        continue
     cls="up" if pct>=0 else "down"; sig="+" if pct>=0 else ""
     st.markdown(f'<div class="idx-card"><div class="idx-label">{name}</div><div class="idx-price">{p:,.0f}</div><div class="{cls}">{sig}{pct:.2f}%</div></div>', unsafe_allow_html=True)
 st.markdown('</div>', unsafe_allow_html=True)
 
-sp_pct=indices.get("S&P 500",{}).get("pct",0)
-vcls="ok" if vix<18 else ("warn" if vix<25 else "bad")
-bcls="up" if btc_pct>=0 else "down"
-bsig="+" if btc_pct>=0 else ""
-bp=f"${btc_price:,.0f}" if btc_price>0 else "—"
-if vix<18 and sp_pct>0:   ctx_cls,ctx_txt="ok","✅ Condiciones favorables"
-elif vix>25 or sp_pct<-1: ctx_cls,ctx_txt="bad","⚠️ Mercado defensivo"
-else:                      ctx_cls,ctx_txt="warn","⚪ Contexto mixto"
+sp_pct=(indices.get("S&P 500",{}).get("pct") or 0)
+_vix_val = vix if vix is not None else 0
+vcls="ok" if _vix_val<18 else ("warn" if _vix_val<25 else "bad")
+_btc_pct_val = btc_pct if btc_pct is not None else 0
+bcls="up" if _btc_pct_val>=0 else "down"
+bsig="+" if _btc_pct_val>=0 else ""
+bp=f"${btc_price:,.0f}" if (btc_price and btc_price>0) else "—"
+if _vix_val<18 and sp_pct>0:   ctx_cls,ctx_txt="ok","✅ Condiciones favorables"
+elif _vix_val>25 or sp_pct<-1: ctx_cls,ctx_txt="bad","⚠️ Mercado defensivo"
+else:                          ctx_cls,ctx_txt="warn","⚪ Contexto mixto"
 
 st.markdown(f"""
 <div class="ctx-grid">
-  <div class="ctx-card"><div class="ctx-label">VIX</div><div class="ctx-val">{vix:.1f}</div><div class="ctx-sub {vcls}">{"✅ Tranquilo" if vix<18 else ("⚠️ Moderado" if vix<25 else "🔴 Alto")}</div></div>
-  <div class="ctx-card"><div class="ctx-label">BTC</div><div class="ctx-val {bcls}">{bp}</div><div class="ctx-sub {bcls}">{bsig}{btc_pct:.2f}%</div></div>
+  <div class="ctx-card"><div class="ctx-label">VIX</div><div class="ctx-val">{(f"{_vix_val:.1f}" if vix is not None else "—")}</div><div class="ctx-sub {vcls}">{"✅ Tranquilo" if _vix_val<18 else ("⚠️ Moderado" if _vix_val<25 else "🔴 Alto")}</div></div>
+  <div class="ctx-card"><div class="ctx-label">BTC</div><div class="ctx-val {bcls}">{bp}</div><div class="ctx-sub {bcls}">{(f"{bsig}{_btc_pct_val:.2f}%" if btc_pct is not None else "s/d")}</div></div>
   <div class="ctx-card"><div class="ctx-label">Contexto</div><div class="ctx-val" style="font-size:12px;margin-top:4px;">&nbsp;</div><div class="ctx-sub {ctx_cls}" style="font-size:12px;">{ctx_txt}</div></div>
 </div>
 """, unsafe_allow_html=True)
@@ -780,7 +833,7 @@ def fetch_fund(item):
     pef = fund.get("pe_fwd")
     item["pe_fwd"] = f"{pef:.1f}" if pef and pef > 0 else "—"
 
-    # Fair Value promedio de 3 modelos (Graham + Fwd P/E + Crecimiento)
+    # Fair Value promedio de múltiplos (Fwd P/E + Crecimiento descontado)
     pe_hist_raw = fund.get("pe_ttm")
     fv_txt, fv_up_txt, fv_up_raw = calc_fair_value(fund, pe_hist_raw, item["precio"])
     item["fv"] = fv_txt
@@ -843,9 +896,9 @@ with st.expander("🧮 Calculadora de gestion (SL / TP / tamano de posicion)", e
     # Explicacion de las bandas de volatilidad para todos (amigos incluidos)
     st.markdown("""<div style='font-size:11px;color:#a0aec0;line-height:1.6;background:#0d1424;border:1px solid #1e3a5f;border-radius:8px;padding:10px 12px;margin-bottom:10px;'>
 <b style='color:#00d4ff'>¿Que es la banda de volatilidad?</b> Mide cuanto se mueve normalmente la accion. Define cuanto margen darle al Stop Loss: una accion mas movida necesita un stop mas lejano para no salir por ruido.<br>
-🟦 <b>B1 tranquila</b> (poca volatilidad): SL ajustado <b>1.3× ATR</b> · TP1 1.6× · TP2 3.0×<br>
-🟨 <b>B2 hibrida</b> (volatilidad media): SL <b>1.5× ATR</b> · TP1 2.0× · TP2 3.5×<br>
-🟥 <b>B3 volatil</b> (mucho movimiento): SL mas amplio <b>1.8× ATR</b> · TP1 2.5× · TP2 4.0×<br>
+🟦 <b>B1 tranquila</b> (poca volatilidad, tipo blue chip): SL <b>1.3× ATR</b> · TP1 2.0× · TP2 3.5×<br>
+🟨 <b>B2 hibrida</b> (volatilidad media): SL <b>1.5× ATR</b> · TP1 2.2× · TP2 4.0×<br>
+🟥 <b>B3 volatil</b> (mucho movimiento / especulativa): SL <b>2.0× ATR</b> · TP1 2.8× · TP2 5.0×<br>
 <span style='color:#718096'>El ATR es el rango medio que recorre la accion en un dia. SL/TP se calculan como multiplos del ATR segun la banda.</span>
 </div>""", unsafe_allow_html=True)
 
@@ -898,9 +951,9 @@ with st.expander("🧮 Calculadora de gestion (SL / TP / tamano de posicion)", e
     with e3:
         monto = st.number_input("Monto a invertir (USD)", min_value=0.0, value=100.0, step=50.0, format="%.0f")
 
-    sl_mult  = {1: 1.3, 2: 1.5, 3: 1.8}[banda]
-    tp1_mult = {1: 1.6, 2: 2.0, 3: 2.5}[banda]
-    tp2_mult = {1: 3.0, 2: 3.5, 3: 4.0}[banda]
+    sl_mult  = {1: 1.3, 2: 1.5, 3: 2.0}[banda]
+    tp1_mult = {1: 2.0, 2: 2.2, 3: 2.8}[banda]
+    tp2_mult = {1: 3.5, 2: 4.0, 3: 5.0}[banda]
 
     if entrada > 0 and atr > 0:
         sl  = entrada - atr * sl_mult
@@ -937,7 +990,28 @@ with st.expander("🧮 Calculadora de gestion (SL / TP / tamano de posicion)", e
         resumen = ("💰 <b>" + f"{acciones:.2f}" + " acciones</b> con $" + f"{monto:.0f}" + " a $" + f"{entrada:.2f}"
                    + " · Riesgo si toca SL: <b style='color:#ff4d6d'>$" + f"{abs(riesgo_total):.2f}" + "</b> (" + f"{riesgo_pct:.1f}" + "%)")
         st.markdown("<div style='font-size:12px;color:#a0aec0;margin-top:8px;line-height:1.7;'>" + resumen + "</div>", unsafe_allow_html=True)
-        st.markdown("<div style='font-size:10px;color:#4a5568;margin-top:6px;'>SL/TP por ATR ajustados a la banda. Referencial, no es recomendacion. Gestiona en Moomoo.</div>", unsafe_allow_html=True)
+
+        # ── GESTION POR ETAPAS: 50% en TP1 + breakeven + 50% en TP2 ──
+        mitad = acciones / 2
+        gan_tp1_mitad = mitad * (tp1 - entrada)      # ganancia al cerrar 50% en TP1
+        gan_tp2_mitad = mitad * (tp2 - entrada)      # ganancia del 50% restante si llega a TP2
+        # Escenario A: llega a TP1, cierra 50%, sube stop a BE, y la otra mitad cae a BE
+        esc_be = gan_tp1_mitad + 0                   # la 2da mitad sale a $0 (breakeven)
+        # Escenario B: llega a TP1 (cierra 50%) y luego a TP2 (cierra resto)
+        esc_full = gan_tp1_mitad + gan_tp2_mitad
+
+        etapas_html = ("<div style='background:#0d1424;border:1px solid #1e3a5f;border-radius:8px;padding:10px 12px;margin-top:10px;font-size:12px;color:#a0aec0;line-height:1.7;'>"
+            + "<b style='color:#00d4ff'>📊 Plan de salida por etapas</b><br>"
+            + "<b>1.</b> En <b style='color:#00e5a0'>TP1 ($" + f"{tp1:.2f}" + ")</b>: cierras <b>50%</b> → aseguras <b style='color:#00e5a0'>+$" + f"{gan_tp1_mitad:.2f}" + "</b> y subes el stop a <b>breakeven ($" + f"{entrada:.2f}" + ")</b><br>"
+            + "<b>2.</b> El <b>50% restante</b> corre con riesgo CERO (si cae, sale a tu precio de entrada)<br>"
+            + "<b>3.</b> En <b style='color:#00e5a0'>TP2 ($" + f"{tp2:.2f}" + ")</b>: cierras el resto → +$" + f"{gan_tp2_mitad:.2f}" + " extra<br>"
+            + "<div style='margin-top:6px;padding-top:6px;border-top:1px solid #1e3a5f;'>"
+            + "🛡️ Si solo llega a TP1 y vuelve a BE: ganas <b style='color:#00e5a0'>+$" + f"{esc_be:.2f}" + "</b> con la otra mitad a riesgo cero<br>"
+            + "🚀 Si llega hasta TP2: ganas <b style='color:#00e5a0'>+$" + f"{esc_full:.2f}" + "</b> en total (valor final $" + f"{monto + esc_full:.2f}" + ")"
+            + "</div></div>")
+        st.markdown(etapas_html, unsafe_allow_html=True)
+
+        st.markdown("<div style='font-size:10px;color:#4a5568;margin-top:6px;'>SL/TP por ATR ajustados a la banda. Plan de salida 50%/50% con breakeven tras TP1. Referencial, no es recomendacion. Gestiona en Moomoo.</div>", unsafe_allow_html=True)
     else:
         st.info("Completa precio de entrada y ATR (mayores a 0) para calcular.")
 
@@ -1131,7 +1205,7 @@ st.markdown("""<div class="glosario">
 <b>🟢DI+</b> DI+&gt;DI- (presión alcista, separa giro real de trampa) &nbsp;·&nbsp;
 <b>💎VALOR</b> FV ≥+15% (suma 1) · <b>💎💎</b> FV Y Target ambos ≥+15% (distintivo, no suma extra) &nbsp;·&nbsp;
 <b>ATR</b> rango medio diario en $ (14d, Wilder) — úsalo para fijar Stop Loss y Take Profit &nbsp;·&nbsp;
-<b>Fair Value</b> promedio 3 modelos · <b>Upside</b> % vs Target
+<b>Fair Value</b> Fwd P/E + crecimiento · <b>Upside</b> % vs Target
 </div>""", unsafe_allow_html=True)
 
 def tabla_puntaje(titulo, lista, color):
@@ -1165,7 +1239,7 @@ def render_seccion(titulo, css, key, glosario):
         return
     st.markdown(tabla_html(items, con_score=False), unsafe_allow_html=True)
 
-GLOS_FUND = "<b>Fair Value</b>: promedio Graham + Fwd P/E + Crecimiento &nbsp;·&nbsp; <b>vs FV</b>: % vs Fair Value &nbsp;·&nbsp; <b>Target 12M</b>: objetivo analistas &nbsp;·&nbsp; <b>Upside</b>: % vs Target"
+GLOS_FUND = "<b>Fair Value</b>: Fwd P/E + crecimiento descontado &nbsp;·&nbsp; <b>vs FV</b>: % vs Fair Value &nbsp;·&nbsp; <b>Target 12M</b>: objetivo analistas &nbsp;·&nbsp; <b>Upside</b>: % vs Target"
 
 render_seccion(
     "🔴 RSI EN SOBREVENTA — RSI < 35", "sec-os", "p_rsi",
