@@ -364,7 +364,7 @@ def analizar_ticker(sym, df):
         return None
 
     # Score técnico: RSI + Giro + Toque + DI = hasta 4 puntos técnicos
-    score_tecnico = sum([p_rsi, p_giro, p_toque, p_di])
+    score_tecnico = (2 if p_giro else 0) + (1 if p_rsi else 0) + (1 if p_toque else 0) + (1 if p_di else 0)
 
     return {
         "sym": sym,
@@ -405,7 +405,7 @@ def procesar_fund(item):
     item["consenso"] = consenso(fund.get("rec_mean"), fund.get("n_analysts"))
     fv_ok = (fv_up_raw is not None and fv_up_raw >= 15)
     target_ok = (target_up_raw is not None and target_up_raw >= 15)
-    if fv_ok and target_ok: item["valor_pts"] = 2; item["score"] += 2
+    if fv_ok and target_ok: item["valor_pts"] = 2; item["score"] += 1
     elif fv_ok:             item["valor_pts"] = 1; item["score"] += 1
     return item
 
