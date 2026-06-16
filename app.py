@@ -480,14 +480,31 @@ def analizar_ticker(sym, df):
     adx_v = float(df['ADX'].iloc[-1]) if not pd.isna(df['ADX'].iloc[-1]) else 0
     precio= float(df['Close'].iloc[-1])
 
+    # ── ATR% (volatilidad esperada diaria) — clave para trading de días ──
+    atr_abs = float(df['ATR'].iloc[-1]) if not pd.isna(df['ATR'].iloc[-1]) else 0
+    atr_pct = (atr_abs / precio * 100) if precio > 0 else 0
+
+    # ── Liquidez: volumen-dólar promedio 20d (en millones USD) ──
+    vol_ma_v = float(df['VOL_MA'].iloc[-1]) if not pd.isna(df['VOL_MA'].iloc[-1]) else 0
+    dolar_vol_m = (vol_ma_v * precio) / 1e6   # millones USD/día
+
+    ma50_v  = float(df['MA50'].iloc[-1])
+    ma200_v = float(df['MA200'].iloc[-1])
+    ma325_v = float(df['MA325'].iloc[-1])
+
     # ══════════════════════════════════════════════════════════
-    # 5 PUNTOS INDEPENDIENTES DE SCORE
+    # PUNTOS DE SCORE CON PESOS DIFERENCIADOS
+    #   Giro confirmado = 2 (señal rara y potente)
+    #   RSI, Toque, DI  = 1 cada uno
+    #   Valor           = +1 máximo (el ×2 es distintivo visual aparte)
     # ══════════════════════════════════════════════════════════
 
-    # ── PUNTO 1: RSI < 35 (sobreventa) ──
+    # ── RSI < 35 (sobreventa) CON CONTEXTO de tendencia ──
     p_rsi = rsi_v < 35
+    # sobreventa "sana" (sobre MA200) vs "en caída" (bajo MA200 = cuchillo cayendo)
+    rsi_sana = p_rsi and precio > ma200_v
 
-    # ── PUNTO 2: GIRO KDJ + CRUCE MACD + volumen + cierre sobre min ayer ──
+    # ── GIRO KDJ + CRUCE MACD + volumen + cierre sobre min ayer (PESO 2) ──
     cierre_sobre_min = precio > float(df['Low'].iloc[-2])
     vol_ok = bool(df['VOL_OK'].iloc[-1])
     p_giro = (
@@ -497,10 +514,7 @@ def analizar_ticker(sym, df):
         vol_ok
     )
 
-    # ── PUNTO 3: TOQUE DE SOPORTE — Bollinger inf. O EMA 50/200/325 desde arriba ──
-    ma50_v  = float(df['MA50'].iloc[-1])
-    ma200_v = float(df['MA200'].iloc[-1])
-    ma325_v = float(df['MA325'].iloc[-1])
+    # ── TOQUE DE SOPORTE — Bollinger inf. O EMA 50/200/325 desde arriba ──
     low_v   = float(df['Low'].iloc[-1])
     bb_dn_y = float(df['BB_DN'].iloc[-2])
     low_y   = float(df['Low'].iloc[-2])
@@ -512,21 +526,20 @@ def analizar_ticker(sym, df):
         (low_v <= ma325_v * 1.015 and precio > ma325_v * 0.985)
     )
     toca_bb = (low_y <= bb_dn_y and precio > bb_dn)
-    # Toque válido solo con volumen y cierre sobre mínimo de ayer
     p_toque = (toca_ema or toca_bb) and cierre_sobre_min and vol_ok
 
-    # ── PUNTO 4: DIRECCIÓN DI+ > DI- (cambio real vs trampa bajista) ──
+    # ── DIRECCIÓN DI+ > DI- (cambio real vs trampa bajista) ──
     pdi_v = float(df['PDI'].iloc[-1]) if not pd.isna(df['PDI'].iloc[-1]) else 0
     mdi_v = float(df['MDI'].iloc[-1]) if not pd.isna(df['MDI'].iloc[-1]) else 0
-    p_di = pdi_v > mdi_v   # DI+ dominante = presión alcista confirmada
+    p_di = pdi_v > mdi_v
 
-    # ── PUNTO 5-6: VALOR (se calcula en fetch_fund, +1 o +2) ──
+    # ── VALOR: se calcula en fetch_fund (+1 al score, ×2 es visual) ──
 
     if not (p_rsi or p_giro or p_toque):
         return None
 
-    # Score técnico: RSI + Giro + Toque + DI = hasta 4 puntos técnicos
-    score_tecnico = sum([p_rsi, p_giro, p_toque, p_di])
+    # Score técnico CON PESOS: Giro vale 2, el resto 1
+    score_tecnico = (2 if p_giro else 0) + (1 if p_rsi else 0) + (1 if p_toque else 0) + (1 if p_di else 0)
 
     return {
         "sym": sym,
@@ -537,9 +550,15 @@ def analizar_ticker(sym, df):
         "adx": adx_v, "adx_str": f"{adx_v:.1f}",
         "score": score_tecnico,
         "p_rsi":   p_rsi,
+        "rsi_sana": rsi_sana,
         "p_giro":  p_giro,
         "p_toque": p_toque,
         "p_di":    p_di,
+        "atr_pct": atr_pct,
+        "atr_str": f"{atr_pct:.1f}%" if atr_pct > 0 else "—",
+        "dolar_vol_m": dolar_vol_m,
+        "liq_str": (f"${dolar_vol_m:.0f}M" if dolar_vol_m >= 1 else f"${dolar_vol_m*1000:.0f}K"),
+        "liq_baja": dolar_vol_m < 20,   # < 20M USD/día = baja liquidez (marca, no descarta)
         # detalle de qué soporte tocó (para mostrar)
         "toca_ema": toca_ema,
         "toca_bb":  toca_bb,
@@ -781,16 +800,16 @@ def fetch_fund(item):
     item["fv_up"] = fv_up_txt
 
     # ── PUNTO 4-5: VALOR (+1 o +2) ──
-    # +1 si FV >= +15% (barata vs fair value)
-    # +2 si ADEMÁS Target 12M >= +15% (doble confirmación: FV Y analistas)
+    # VALOR suma máximo +1 al score (no infla el ranking técnico).
+    # El ×2 (FV Y Target ambos baratos) es solo distintivo visual 💎💎.
     fv_ok     = (fv_up_raw is not None and fv_up_raw >= 15)
     target_ok = (target_up_raw is not None and target_up_raw >= 15)
     if fv_ok and target_ok:
-        item["score"] = item["score"] + 2
-        item["valor_pts"] = 2
+        item["score"] = item["score"] + 1      # +1 al score (no +2)
+        item["valor_pts"] = 2                  # 2 = mostrar 💎💎
     elif fv_ok:
         item["score"] = item["score"] + 1
-        item["valor_pts"] = 1
+        item["valor_pts"] = 1                  # 1 = mostrar 💎
     else:
         item["valor_pts"] = 0
 
@@ -813,23 +832,41 @@ n_giro  = sum(1 for x in todos if x["p_giro"])
 n_toque = sum(1 for x in todos if x["p_toque"])
 n_di    = sum(1 for x in todos if x.get("p_di"))
 n_valor = sum(1 for x in todos if x.get("valor_pts",0) > 0)
+# Robustez: cuantos candidatos quedaron sin fundamentales (FV en "-")
+n_sin_fund = sum(1 for x in todos if x.get("fv","-") in ("-", "—"))
+pct_sin = (n_sin_fund / len(todos) * 100) if todos else 0
 
-st.markdown(f'<div style="text-align:center;color:var(--muted);font-size:12px;padding:8px 0 16px;letter-spacing:.05em;">✅ {len(WATCHLIST)} tickers · {len(todos)} candidatos · 🔴 {n_rsi} RSI&lt;35 · 🟣 {n_giro} giro · 🟡 {n_toque} soporte · 🟢 {n_di} DI+ · 💎 {n_valor} valor</div>', unsafe_allow_html=True)
+# Sello de frescura del dato (hora de NY al momento del escaneo)
+from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+_ahora_ny = _dt.now(_tz(_td(hours=-5)))
+_sello = _ahora_ny.strftime("%Y-%m-%d %H:%M")
+
+st.markdown(f'<div style="text-align:center;color:var(--muted);font-size:12px;padding:8px 0 4px;letter-spacing:.05em;">✅ {len(WATCHLIST)} tickers · {len(todos)} candidatos · 🔴 {n_rsi} RSI&lt;35 · 🟣 {n_giro} giro · 🟡 {n_toque} soporte · 🟢 {n_di} DI+ · 💎 {n_valor} valor</div>', unsafe_allow_html=True)
+
+# Linea de frescura + robustez de datos
+_aviso_fund = ""
+if pct_sin >= 30:
+    _aviso_fund = f' · <span style="color:#ffd166">⚠ {n_sin_fund} sin fundamentales ({pct_sin:.0f}%) — FV poco fiable hoy</span>'
+elif n_sin_fund > 0:
+    _aviso_fund = f' · {n_sin_fund} sin fundamentales'
+st.markdown(f'<div style="text-align:center;color:#4a5568;font-size:10px;padding:0 0 14px;letter-spacing:.04em;">🕑 datos al cierre/escaneo {_sello} hora NY{_aviso_fund}</div>', unsafe_allow_html=True)
 
 # ======================================================================
 # HELPER: construir filas con todas las columnas
 # ======================================================================
 def construir_gatillos(x):
     gs = []
-    if x["p_rsi"]:   gs.append("🔴RSI")
+    if x["p_rsi"]:
+        # RSI sana (sobre MA200) vs en caída (bajo MA200)
+        gs.append("🔴RSI" if x.get("rsi_sana") else "🔻RSI")
     if x["p_giro"]:  gs.append("🟣GIRO")
     if x["p_toque"]:
         if x.get("toca_bb"): gs.append("🔵BB")
         else:                gs.append("🟡EMA")
     if x.get("p_di"): gs.append("🟢DI+")
     vp = x.get("valor_pts",0)
-    if vp == 2:   gs.append("💎VALOR×2")
-    elif vp == 1: gs.append("💎VALOR×1")
+    if vp == 2:   gs.append("💎💎VALOR")
+    elif vp == 1: gs.append("💎VALOR")
     return " ".join(gs)
 
 def _color_estilo(col, val):
@@ -863,6 +900,21 @@ def _color_estilo(col, val):
             if n==2: return "color:#b48cff;font-weight:600;text-align:center"
         except: pass
         return "color:#4a5568;text-align:center"
+    if col == "ATR%":
+        try:
+            a=float(s.replace("%",""))
+            if a >= 3: return "color:#00e5a0;font-weight:600"   # buena para swing días
+            if a < 1.2: return "color:#4a5568"                   # poco movimiento
+        except: pass
+        return "color:#a0aec0"
+    if col == "Liq":
+        # baja liquidez (K o pocos M) = ámbar de advertencia
+        if "K" in s: return "color:#ffd166;font-weight:600"
+        try:
+            m=float(s.replace("$","").replace("M",""))
+            if m < 20: return "color:#ffd166"
+        except: pass
+        return "color:#4a5568"
     return ""
 
 import re as _re2
@@ -877,6 +929,14 @@ def _valor_sort(col, raw, idx):
         # ordenar alfabetico: usar el simbolo
         m = _re2.search(r'>([^<]+)</a>', s)
         return m.group(1) if m else s
+    if col == "ATR%":
+        try: return float(s.replace("%",""))
+        except: return -1
+    if col == "Liq":
+        try:
+            if "K" in s: return float(s.replace("$","").replace("K",""))/1000.0
+            return float(s.replace("$","").replace("M",""))
+        except: return -1
     if col in ("Gatillos","Consenso"):
         # Consenso: ordenar por nivel (Strong Buy=5 ... Sell=1)
         if "Strong Buy" in s: return 5
@@ -898,10 +958,10 @@ def tabla_html(lista, con_score=True):
 
     if con_score:
         cols = ["#","Ticker","Score","Gatillos","Precio","Fair Value","vs FV",
-                "Target 12M","Upside","RSI","J(KDJ)","ADX","P/E","P/E fwd","Consenso"]
+                "Target 12M","Upside","RSI","J(KDJ)","ADX","ATR%","Liq","P/E","P/E fwd","Consenso"]
     else:
         cols = ["#","Ticker","Precio","Fair Value","vs FV",
-                "Target 12M","Upside","RSI","J(KDJ)","ADX","P/E","P/E fwd","Consenso"]
+                "Target 12M","Upside","RSI","J(KDJ)","ADX","ATR%","Liq","P/E","P/E fwd","Consenso"]
 
     head = "".join(f'<th>{c}<span class="ar"></span></th>' for c in cols)
 
@@ -916,6 +976,7 @@ def tabla_html(lista, con_score=True):
             "Fair Value": x.get("fv","—"), "vs FV": x.get("fv_up","—"),
             "Target 12M": x.get("target","—"), "Upside": x.get("upside","—"),
             "RSI": x["rsi_str"], "J(KDJ)": x["j_str"], "ADX": x["adx_str"],
+            "ATR%": x.get("atr_str","—"), "Liq": x.get("liq_str","—"),
             "P/E": x.get("pe_ttm","—"), "P/E fwd": x.get("pe_fwd","—"),
             "Consenso": x.get("consenso","—"),
         }
@@ -935,14 +996,45 @@ def tabla_html(lista, con_score=True):
 # ======================================================================
 # TOP PICKS — TABLAS SEPARADAS POR PUNTAJE (4-5 · 3 · 2 · 1)
 # ======================================================================
+# ======================================================================
+# QUE CAMBIO VS AYER (usa el historial guardado)
+# ======================================================================
+def _cambios_vs_ayer():
+    """Compara el escaneo de hoy con la ultima foto del historial."""
+    # Buscar la foto mas reciente que NO sea de hoy
+    foto_prev = None
+    for foto in reversed(_hist):
+        if foto.get("fecha") != _ahora_ny.strftime("%Y-%m-%d"):
+            foto_prev = foto
+            break
+    if not foto_prev:
+        return None, None, None
+    # Mapas de score por ticker
+    prev = {t["sym"]: t.get("score", 0) for t in foto_prev.get("tops", [])}
+    hoy_tops = {x["sym"]: x["score"] for x in todos if x["score"] >= 4}
+    nuevos = [s for s in hoy_tops if s not in prev]
+    subieron = [s for s in hoy_tops if s in prev and hoy_tops[s] > prev[s]]
+    return foto_prev.get("fecha"), nuevos, subieron
+
+_fecha_prev, _nuevos, _subieron = _cambios_vs_ayer()
+if _fecha_prev and (_nuevos or _subieron):
+    partes = []
+    if _nuevos:
+        partes.append('<span style="color:#00e5a0;font-weight:600">🆕 Nuevos en TOP:</span> ' + ", ".join(_nuevos))
+    if _subieron:
+        partes.append('<span style="color:#00d4ff;font-weight:600">⬆ Subieron score:</span> ' + ", ".join(_subieron))
+    st.markdown(f'<div style="background:#0d1424;border:1px solid #1e3a5f;border-radius:10px;padding:10px 14px;margin:8px 0 14px;font-size:12px;color:#a0aec0;">Cambios vs {_fecha_prev}: ' + " &nbsp;·&nbsp; ".join(partes) + '</div>', unsafe_allow_html=True)
+
 st.markdown('<div class="sec sec-os">⭐ TOP PICKS POR PUNTAJE</div>', unsafe_allow_html=True)
 st.markdown("""<div class="glosario">
-<b>6 puntos posibles</b> &nbsp;·&nbsp;
-<b>🔴RSI</b> RSI&lt;35 &nbsp;·&nbsp;
-<b>🟣GIRO</b> giro KDJ + MACD + cierre&gt;mín ayer + volumen &nbsp;·&nbsp;
+<b>Puntaje con pesos (máx 6)</b> &nbsp;·&nbsp;
+<b>🟣GIRO (vale 2)</b> giro KDJ + MACD + cierre&gt;mín ayer + volumen — la señal más fuerte &nbsp;·&nbsp;
+<b>🔴RSI</b> sobreventa sana (sobre MA200) · <b>🔻RSI</b> sobreventa en caída (bajo MA200, cuchillo) &nbsp;·&nbsp;
 <b>🟡EMA / 🔵BB</b> toque EMA 50/200/325 o Bollinger + cierre&gt;mín + volumen &nbsp;·&nbsp;
 <b>🟢DI+</b> DI+&gt;DI- (presión alcista, separa giro real de trampa) &nbsp;·&nbsp;
-<b>💎VALOR×1</b> FV ≥+15% · <b>💎VALOR×2</b> FV Y Target ambos ≥+15% &nbsp;·&nbsp;
+<b>💎VALOR</b> FV ≥+15% (suma 1) · <b>💎💎</b> FV Y Target ambos ≥+15% (distintivo, no suma extra) &nbsp;·&nbsp;
+<b>ATR%</b> volatilidad diaria esperada (verde ≥3% = buena para swing días) &nbsp;·&nbsp;
+<b>Liq</b> volumen-dólar/día (ámbar &lt;$20M = cuidado slippage) &nbsp;·&nbsp;
 <b>Fair Value</b> promedio 3 modelos · <b>Upside</b> % vs Target
 </div>""", unsafe_allow_html=True)
 
