@@ -483,6 +483,17 @@ def analizar_ticker(sym, df):
     # ── ATR 14d en dólares (Wilder, estándar igual que RSI) — para SL/TP ──
     atr_abs = float(df['ATR'].iloc[-1]) if not pd.isna(df['ATR'].iloc[-1]) else 0
 
+    # ── BANDA DE VOLATILIDAD (estilo CRH: STD de retornos 60d, suavizada 20d) ──
+    ret = df['Close'].pct_change() * 100
+    beta_raw = ret.rolling(60).std()
+    beta_smooth = beta_raw.rolling(20).mean()
+    bs_v = float(beta_smooth.iloc[-1]) if not pd.isna(beta_smooth.iloc[-1]) else 1.5
+    # Banda 1 = tranquila, 2 = híbrida, 3 = volátil (mismos cortes que el CRH)
+    if bs_v < 1.0:   banda = 1
+    elif bs_v < 1.8: banda = 2
+    else:            banda = 3
+    banda_txt = {1:"🟦 B1", 2:"🟨 B2", 3:"🟥 B3"}[banda]
+
     ma50_v  = float(df['MA50'].iloc[-1])
     ma200_v = float(df['MA200'].iloc[-1])
     ma325_v = float(df['MA325'].iloc[-1])
@@ -551,6 +562,9 @@ def analizar_ticker(sym, df):
         "p_di":    p_di,
         "atr_abs": atr_abs,
         "atr_str": f"${atr_abs:.2f}" if atr_abs > 0 else "—",
+        "banda": banda,
+        "banda_txt": banda_txt,
+        "beta_smooth": bs_v,
         # detalle de qué soporte tocó (para mostrar)
         "toca_ema": toca_ema,
         "toca_bb":  toca_bb,
@@ -666,8 +680,8 @@ with st.expander(f"➕ Agregar tickers a la watchlist compartida ({len(compartid
                 if ya_existen: aviso += f" · Ya existían: {', '.join(ya_existen)}"
                 if invalidos:  aviso += f" · ⚠️ Formato inválido (omitidos): {', '.join(invalidos)}"
                 st.success(aviso)
-                leer_tickers_compartidos.clear()  # limpiar cache para releer
-                st.rerun()
+                st.info("Guardados. Entran en el próximo barrido. Usa el botón 🔄 de abajo para escanearlos ahora.")
+                leer_tickers_compartidos.clear()  # limpiar cache para releer la lista
             else:
                 st.error(f"No se pudo guardar: {msg}")
         else:
@@ -678,6 +692,11 @@ with st.expander(f"➕ Agregar tickers a la watchlist compartida ({len(compartid
 
     if compartidos:
         st.markdown(f'<div style="font-size:10px;color:#4a5568;margin-top:8px;">Compartidos actuales: {", ".join(compartidos)}</div>', unsafe_allow_html=True)
+
+    st.markdown('<div style="height:6px"></div>', unsafe_allow_html=True)
+    if st.button("🔄 Re-escanear ahora (incluye tickers nuevos)", use_container_width=True):
+        st.cache_data.clear()           # limpiar todos los caches (barrido incluido)
+        st.rerun()
 
 # ── Fusionar base + compartidos, SIN duplicados (orden estable) ──
 _vistos = set()
@@ -724,10 +743,8 @@ with st.expander(_label, expanded=False):
             st.markdown('<div style="margin:10px 0;">' + titulo + tabla + '</div>', unsafe_allow_html=True)
 
 # ======================================================================
-# ESCANEO AUTOMATICO - batch download + threading
+# ESCANEO AUTOMATICO - barrido COMPLETO cacheado (rerun instantaneo)
 # ======================================================================
-prog = st.progress(0, text=f"Descargando {len(WATCHLIST)} tickers en batch...")
-
 @st.cache_data(ttl=300, show_spinner=False)
 def descargar_batch(tickers_tuple):
     return yf.download(
@@ -735,28 +752,6 @@ def descargar_batch(tickers_tuple):
         progress=False, auto_adjust=True, threads=True,
     )
 
-df_batch = descargar_batch(tuple(WATCHLIST))
-prog.progress(40, text="Calculando indicadores...")
-
-# Fase 2: indicadores
-resultados = []
-for idx, sym in enumerate(WATCHLIST):
-    if idx % 30 == 0:
-        prog.progress(40 + int(idx/len(WATCHLIST)*30), text=f"Indicadores · {idx}/{len(WATCHLIST)}")
-    try:
-        if isinstance(df_batch.columns, pd.MultiIndex):
-            df_sym = df_batch[sym].copy() if sym in df_batch.columns.get_level_values(0) else None
-        else:
-            df_sym = df_batch.copy()
-        datos = analizar_ticker(sym, df_sym)
-    except:
-        datos = None
-    if datos is not None:
-        datos["sym_original"] = sym
-        resultados.append(datos)
-
-# Fase 3: fundamentales en paralelo
-prog.progress(70, text=f"Fundamentales para {len(resultados)} candidatos...")
 
 def fetch_fund(item):
     sym = item["sym_original"]
@@ -807,16 +802,102 @@ def fetch_fund(item):
 
     return item
 
-with ThreadPoolExecutor(max_workers=4) as executor:
-    todos = list(executor.map(fetch_fund, resultados))
+@st.cache_data(ttl=300, show_spinner=False)
+def barrido_completo(watchlist_tuple):
+    """Barrido completo cacheado: descarga + indicadores + fundamentales.
+    Mientras la watchlist no cambie, un rerun reutiliza este resultado (instantaneo)."""
+    df_batch = descargar_batch(watchlist_tuple)
 
-# asegurar valor_pts en todos
-for x in todos:
-    if "valor_pts" not in x:
-        x["valor_pts"] = 0
+    # Fase indicadores
+    resultados = []
+    for sym in watchlist_tuple:
+        try:
+            if isinstance(df_batch.columns, pd.MultiIndex):
+                df_sym = df_batch[sym].copy() if sym in df_batch.columns.get_level_values(0) else None
+            else:
+                df_sym = df_batch.copy()
+            datos = analizar_ticker(sym, df_sym)
+        except Exception:
+            datos = None
+        if datos is not None:
+            datos["sym_original"] = sym
+            resultados.append(datos)
 
-prog.progress(100, text="¡Listo!")
-prog.empty()
+    # Fase fundamentales en paralelo
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        todos = list(executor.map(fetch_fund, resultados))
+
+    for x in todos:
+        if "valor_pts" not in x:
+            x["valor_pts"] = 0
+    return todos
+
+# Ejecutar (o reutilizar cache). Spinner solo la primera vez.
+with st.spinner(f"Escaneando {len(WATCHLIST)} tickers..."):
+    todos = barrido_completo(tuple(WATCHLIST))
+
+# ======================================================================
+# CALCULADORA DE GESTION (autocompleta precio/ATR/banda del barrido)
+# ======================================================================
+with st.expander("🧮 Calculadora de gestion (SL / TP / tamano)", expanded=False):
+    _mapa = {x["sym_original"]: x for x in todos}
+    _syms = sorted(_mapa.keys())
+    if not _syms:
+        st.info("Sin candidatos en el barrido de hoy para calcular.")
+    else:
+        c1, c2, c3 = st.columns([2,2,2])
+        with c1:
+            sym_sel = st.selectbox("Ticker", _syms)
+        x = _mapa[sym_sel]
+        precio_actual = x["precio"]
+        atr = x.get("atr_abs", 0) or 0
+        banda = x.get("banda", 2)
+        banda_txt = x.get("banda_txt", "?")
+        with c2:
+            usar_actual = st.checkbox("Usar precio actual", value=True)
+        with c3:
+            st.markdown("<div style='font-size:11px;color:#718096;padding-top:6px;'>" + banda_txt + " · ATR $" + f"{atr:.2f}" + " · actual $" + f"{precio_actual:.2f}" + "</div>", unsafe_allow_html=True)
+        c4, c5 = st.columns([2,2])
+        with c4:
+            if usar_actual:
+                entrada = precio_actual
+                st.markdown("<div style='font-size:12px;color:#a0aec0;padding-top:8px;'>Entrada: <b>$" + f"{entrada:.2f}" + "</b> (actual)</div>", unsafe_allow_html=True)
+            else:
+                entrada = st.number_input("Precio de entrada", min_value=0.0, value=float(round(precio_actual,2)), step=0.01, format="%.2f")
+        with c5:
+            monto = st.number_input("Monto a invertir (USD)", min_value=0.0, value=1000.0, step=100.0, format="%.0f")
+        sl_mult = {1: 1.3, 2: 1.5, 3: 1.8}[banda]
+        tp1_mult = {1: 1.6, 2: 2.0, 3: 2.5}[banda]
+        tp2_mult = {1: 3.0, 2: 3.5, 3: 4.0}[banda]
+        if entrada > 0 and atr > 0:
+            sl  = entrada - atr * sl_mult
+            tp1 = entrada + atr * tp1_mult
+            tp2 = entrada + atr * tp2_mult
+            riesgo_usd = (entrada - sl)
+            rr1 = (tp1 - entrada) / riesgo_usd if riesgo_usd > 0 else 0
+            rr2 = (tp2 - entrada) / riesgo_usd if riesgo_usd > 0 else 0
+            acciones = int(monto / entrada) if entrada > 0 else 0
+            riesgo_total = acciones * riesgo_usd
+            riesgo_pct = (riesgo_total / monto * 100) if monto > 0 else 0
+            filas = [
+                ("Stop Loss", "$" + f"{sl:.2f}", "-" + f"{(entrada-sl)/entrada*100:.1f}" + "%", f"{sl_mult}" + "x ATR"),
+                ("Take Profit 1", "$" + f"{tp1:.2f}", "+" + f"{(tp1-entrada)/entrada*100:.1f}" + "%", f"{tp1_mult}" + "x ATR · R:R " + f"{rr1:.1f}"),
+                ("Take Profit 2", "$" + f"{tp2:.2f}", "+" + f"{(tp2-entrada)/entrada*100:.1f}" + "%", f"{tp2_mult}" + "x ATR · R:R " + f"{rr2:.1f}"),
+            ]
+            html = '<div class="tw"><table><thead><tr><th style="text-align:left">Nivel</th><th>Precio</th><th>%</th><th>Base</th></tr></thead><tbody>'
+            for n, p, pct, base in filas:
+                col = "#00e5a0" if "Profit" in n else "#ff4d6d"
+                html += '<tr><td style="text-align:left;color:' + col + ';font-weight:600">' + n + '</td><td>' + p + '</td><td style="color:' + col + '">' + pct + '</td><td style="font-size:10px;color:#718096">' + base + '</td></tr>'
+            html += "</tbody></table></div>"
+            st.markdown(html, unsafe_allow_html=True)
+            resumen = ("💰 <b>" + str(acciones) + " acciones</b> con $" + f"{monto:.0f}" + " a $" + f"{entrada:.2f}"
+                       + " · Riesgo si toca SL: <b style='color:#ff4d6d'>$" + f"{riesgo_total:.0f}" + "</b> (" + f"{riesgo_pct:.1f}" + "%)"
+                       + " · Ganancia TP1: <b style='color:#00e5a0'>$" + f"{acciones*(tp1-entrada):.0f}" + "</b>"
+                       + " · TP2: <b style='color:#00e5a0'>$" + f"{acciones*(tp2-entrada):.0f}" + "</b>")
+            st.markdown("<div style='font-size:12px;color:#a0aec0;margin-top:8px;line-height:1.7;'>" + resumen + "</div>", unsafe_allow_html=True)
+            st.markdown("<div style='font-size:10px;color:#4a5568;margin-top:6px;'>SL/TP por ATR ajustados a la banda. Referencial, no es recomendacion. Gestiona en Moomoo.</div>", unsafe_allow_html=True)
+        else:
+            st.warning("Sin ATR disponible para este ticker (cripto/forex no aplican).")
 
 # Resumen
 n_rsi   = sum(1 for x in todos if x["p_rsi"])
