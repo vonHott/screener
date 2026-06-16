@@ -837,67 +837,103 @@ with st.spinner(f"Escaneando {len(WATCHLIST)} tickers..."):
     todos = barrido_completo(tuple(WATCHLIST))
 
 # ======================================================================
-# CALCULADORA DE GESTION (autocompleta precio/ATR/banda del barrido)
+# CALCULADORA DE GESTION (candidato del barrido o manual)
 # ======================================================================
-with st.expander("🧮 Calculadora de gestion (SL / TP / tamano)", expanded=False):
+with st.expander("🧮 Calculadora de gestion (SL / TP / tamano de posicion)", expanded=False):
+    # Explicacion de las bandas de volatilidad para todos (amigos incluidos)
+    st.markdown("""<div style='font-size:11px;color:#a0aec0;line-height:1.6;background:#0d1424;border:1px solid #1e3a5f;border-radius:8px;padding:10px 12px;margin-bottom:10px;'>
+<b style='color:#00d4ff'>¿Que es la banda de volatilidad?</b> Mide cuanto se mueve normalmente la accion. Define cuanto margen darle al Stop Loss: una accion mas movida necesita un stop mas lejano para no salir por ruido.<br>
+🟦 <b>B1 tranquila</b> (poca volatilidad): SL ajustado <b>1.3× ATR</b> · TP1 1.6× · TP2 3.0×<br>
+🟨 <b>B2 hibrida</b> (volatilidad media): SL <b>1.5× ATR</b> · TP1 2.0× · TP2 3.5×<br>
+🟥 <b>B3 volatil</b> (mucho movimiento): SL mas amplio <b>1.8× ATR</b> · TP1 2.5× · TP2 4.0×<br>
+<span style='color:#718096'>El ATR es el rango medio que recorre la accion en un dia. SL/TP se calculan como multiplos del ATR segun la banda.</span>
+</div>""", unsafe_allow_html=True)
+
+    modo = st.radio("Modo", ["Desde candidato del barrido", "Manual (cualquier accion)"], horizontal=True, label_visibility="collapsed")
+
     _mapa = {x["sym_original"]: x for x in todos}
     _syms = sorted(_mapa.keys())
-    if not _syms:
-        st.info("Sin candidatos en el barrido de hoy para calcular.")
-    else:
-        c1, c2, c3 = st.columns([2,2,2])
-        with c1:
-            sym_sel = st.selectbox("Ticker", _syms)
-        x = _mapa[sym_sel]
-        precio_actual = x["precio"]
-        atr = x.get("atr_abs", 0) or 0
-        banda = x.get("banda", 2)
-        banda_txt = x.get("banda_txt", "?")
-        with c2:
-            usar_actual = st.checkbox("Usar precio actual", value=True)
-        with c3:
-            st.markdown("<div style='font-size:11px;color:#718096;padding-top:6px;'>" + banda_txt + " · ATR $" + f"{atr:.2f}" + " · actual $" + f"{precio_actual:.2f}" + "</div>", unsafe_allow_html=True)
-        c4, c5 = st.columns([2,2])
-        with c4:
-            if usar_actual:
-                entrada = precio_actual
-                st.markdown("<div style='font-size:12px;color:#a0aec0;padding-top:8px;'>Entrada: <b>$" + f"{entrada:.2f}" + "</b> (actual)</div>", unsafe_allow_html=True)
-            else:
-                entrada = st.number_input("Precio de entrada", min_value=0.0, value=float(round(precio_actual,2)), step=0.01, format="%.2f")
-        with c5:
-            monto = st.number_input("Monto a invertir (USD)", min_value=0.0, value=1000.0, step=100.0, format="%.0f")
-        sl_mult = {1: 1.3, 2: 1.5, 3: 1.8}[banda]
-        tp1_mult = {1: 1.6, 2: 2.0, 3: 2.5}[banda]
-        tp2_mult = {1: 3.0, 2: 3.5, 3: 4.0}[banda]
-        if entrada > 0 and atr > 0:
-            sl  = entrada - atr * sl_mult
-            tp1 = entrada + atr * tp1_mult
-            tp2 = entrada + atr * tp2_mult
-            riesgo_usd = (entrada - sl)
-            rr1 = (tp1 - entrada) / riesgo_usd if riesgo_usd > 0 else 0
-            rr2 = (tp2 - entrada) / riesgo_usd if riesgo_usd > 0 else 0
-            acciones = int(monto / entrada) if entrada > 0 else 0
-            riesgo_total = acciones * riesgo_usd
-            riesgo_pct = (riesgo_total / monto * 100) if monto > 0 else 0
-            filas = [
-                ("Stop Loss", "$" + f"{sl:.2f}", "-" + f"{(entrada-sl)/entrada*100:.1f}" + "%", f"{sl_mult}" + "x ATR"),
-                ("Take Profit 1", "$" + f"{tp1:.2f}", "+" + f"{(tp1-entrada)/entrada*100:.1f}" + "%", f"{tp1_mult}" + "x ATR · R:R " + f"{rr1:.1f}"),
-                ("Take Profit 2", "$" + f"{tp2:.2f}", "+" + f"{(tp2-entrada)/entrada*100:.1f}" + "%", f"{tp2_mult}" + "x ATR · R:R " + f"{rr2:.1f}"),
-            ]
-            html = '<div class="tw"><table><thead><tr><th style="text-align:left">Nivel</th><th>Precio</th><th>%</th><th>Base</th></tr></thead><tbody>'
-            for n, p, pct, base in filas:
-                col = "#00e5a0" if "Profit" in n else "#ff4d6d"
-                html += '<tr><td style="text-align:left;color:' + col + ';font-weight:600">' + n + '</td><td>' + p + '</td><td style="color:' + col + '">' + pct + '</td><td style="font-size:10px;color:#718096">' + base + '</td></tr>'
-            html += "</tbody></table></div>"
-            st.markdown(html, unsafe_allow_html=True)
-            resumen = ("💰 <b>" + str(acciones) + " acciones</b> con $" + f"{monto:.0f}" + " a $" + f"{entrada:.2f}"
-                       + " · Riesgo si toca SL: <b style='color:#ff4d6d'>$" + f"{riesgo_total:.0f}" + "</b> (" + f"{riesgo_pct:.1f}" + "%)"
-                       + " · Ganancia TP1: <b style='color:#00e5a0'>$" + f"{acciones*(tp1-entrada):.0f}" + "</b>"
-                       + " · TP2: <b style='color:#00e5a0'>$" + f"{acciones*(tp2-entrada):.0f}" + "</b>")
-            st.markdown("<div style='font-size:12px;color:#a0aec0;margin-top:8px;line-height:1.7;'>" + resumen + "</div>", unsafe_allow_html=True)
-            st.markdown("<div style='font-size:10px;color:#4a5568;margin-top:6px;'>SL/TP por ATR ajustados a la banda. Referencial, no es recomendacion. Gestiona en Moomoo.</div>", unsafe_allow_html=True)
+
+    # Valores que se definiran segun el modo
+    sym_label = ""; precio_actual = 0.0; atr = 0.0; banda = 2
+
+    if modo == "Desde candidato del barrido":
+        if not _syms:
+            st.info("Sin candidatos en el barrido de hoy. Usa el modo Manual.")
         else:
-            st.warning("Sin ATR disponible para este ticker (cripto/forex no aplican).")
+            cc1, cc2 = st.columns([3,3])
+            with cc1:
+                sym_sel = st.selectbox("Ticker (candidato)", _syms)
+            x = _mapa[sym_sel]
+            sym_label = sym_sel
+            precio_actual = x["precio"]
+            atr = x.get("atr_abs", 0) or 0
+            banda = x.get("banda", 2)
+            with cc2:
+                st.markdown("<div style='font-size:11px;color:#718096;padding-top:30px;'>Autocompletado: " + x.get("banda_txt","?") + " · ATR $" + f"{atr:.2f}" + " · actual $" + f"{precio_actual:.2f}" + "</div>", unsafe_allow_html=True)
+    else:
+        # Modo manual: el usuario ingresa todo
+        m1, m2, m3 = st.columns([2,2,2])
+        with m1:
+            sym_label = st.text_input("Ticker", value="", placeholder="ej: AAPL")
+        with m2:
+            precio_actual = st.number_input("Precio actual ($)", min_value=0.0, value=100.0, step=0.01, format="%.2f")
+        with m3:
+            atr = st.number_input("ATR ($) — de Moomoo/Finviz", min_value=0.0, value=2.0, step=0.01, format="%.2f")
+        banda_label = st.radio("Banda de volatilidad (elige segun cuanto se mueve la accion)",
+                               ["🟦 B1 tranquila", "🟨 B2 hibrida", "🟥 B3 volatil"],
+                               index=1, horizontal=True)
+        banda = {"🟦 B1 tranquila":1, "🟨 B2 hibrida":2, "🟥 B3 volatil":3}[banda_label]
+
+    # Entrada y monto (comun a ambos modos)
+    e1, e2, e3 = st.columns([2,2,2])
+    with e1:
+        usar_actual = st.checkbox("Usar precio actual como entrada", value=True)
+    with e2:
+        if usar_actual:
+            entrada = precio_actual
+            st.markdown("<div style='font-size:12px;color:#a0aec0;padding-top:8px;'>Entrada: <b>$" + f"{entrada:.2f}" + "</b></div>", unsafe_allow_html=True)
+        else:
+            entrada = st.number_input("Precio de entrada ($)", min_value=0.0, value=float(round(precio_actual,2)) if precio_actual>0 else 0.0, step=0.01, format="%.2f")
+    with e3:
+        monto = st.number_input("Monto a invertir (USD)", min_value=0.0, value=1000.0, step=100.0, format="%.0f")
+
+    sl_mult  = {1: 1.3, 2: 1.5, 3: 1.8}[banda]
+    tp1_mult = {1: 1.6, 2: 2.0, 3: 2.5}[banda]
+    tp2_mult = {1: 3.0, 2: 3.5, 3: 4.0}[banda]
+
+    if entrada > 0 and atr > 0:
+        sl  = entrada - atr * sl_mult
+        tp1 = entrada + atr * tp1_mult
+        tp2 = entrada + atr * tp2_mult
+        riesgo_usd = (entrada - sl)
+        rr1 = (tp1 - entrada) / riesgo_usd if riesgo_usd > 0 else 0
+        rr2 = (tp2 - entrada) / riesgo_usd if riesgo_usd > 0 else 0
+        acciones = int(monto / entrada) if entrada > 0 else 0
+        riesgo_total = acciones * riesgo_usd
+        riesgo_pct = (riesgo_total / monto * 100) if monto > 0 else 0
+        b_txt = {1:"🟦 B1 tranquila", 2:"🟨 B2 hibrida", 3:"🟥 B3 volatil"}[banda]
+        titulo = (sym_label or "Accion") + "  ·  " + b_txt
+        st.markdown("<div style='font-family:Syne,sans-serif;font-weight:700;color:#00d4ff;font-size:14px;margin:6px 0;'>" + titulo + "</div>", unsafe_allow_html=True)
+        filas = [
+            ("Stop Loss", "$" + f"{sl:.2f}", "-" + f"{(entrada-sl)/entrada*100:.1f}" + "%", f"{sl_mult}" + "x ATR"),
+            ("Take Profit 1", "$" + f"{tp1:.2f}", "+" + f"{(tp1-entrada)/entrada*100:.1f}" + "%", f"{tp1_mult}" + "x ATR · R:R " + f"{rr1:.1f}"),
+            ("Take Profit 2", "$" + f"{tp2:.2f}", "+" + f"{(tp2-entrada)/entrada*100:.1f}" + "%", f"{tp2_mult}" + "x ATR · R:R " + f"{rr2:.1f}"),
+        ]
+        html = '<div class="tw"><table><thead><tr><th style="text-align:left">Nivel</th><th>Precio</th><th>%</th><th>Base</th></tr></thead><tbody>'
+        for n, p, pct, base in filas:
+            col = "#00e5a0" if "Profit" in n else "#ff4d6d"
+            html += '<tr><td style="text-align:left;color:' + col + ';font-weight:600">' + n + '</td><td>' + p + '</td><td style="color:' + col + '">' + pct + '</td><td style="font-size:10px;color:#718096">' + base + '</td></tr>'
+        html += "</tbody></table></div>"
+        st.markdown(html, unsafe_allow_html=True)
+        resumen = ("💰 <b>" + str(acciones) + " acciones</b> con $" + f"{monto:.0f}" + " a $" + f"{entrada:.2f}"
+                   + " · Riesgo si toca SL: <b style='color:#ff4d6d'>$" + f"{riesgo_total:.0f}" + "</b> (" + f"{riesgo_pct:.1f}" + "%)"
+                   + " · Ganancia TP1: <b style='color:#00e5a0'>$" + f"{acciones*(tp1-entrada):.0f}" + "</b>"
+                   + " · TP2: <b style='color:#00e5a0'>$" + f"{acciones*(tp2-entrada):.0f}" + "</b>")
+        st.markdown("<div style='font-size:12px;color:#a0aec0;margin-top:8px;line-height:1.7;'>" + resumen + "</div>", unsafe_allow_html=True)
+        st.markdown("<div style='font-size:10px;color:#4a5568;margin-top:6px;'>SL/TP por ATR ajustados a la banda. Referencial, no es recomendacion. Gestiona en Moomoo.</div>", unsafe_allow_html=True)
+    else:
+        st.info("Completa precio de entrada y ATR (mayores a 0) para calcular.")
 
 # Resumen
 n_rsi   = sum(1 for x in todos if x["p_rsi"])
