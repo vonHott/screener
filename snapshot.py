@@ -191,9 +191,7 @@ def calc_fair_value(fund, pe_hist, precio_actual):
 
     modelos = []
 
-    # Modelo 1: Graham √(22.5×EPS×BV) — solo value rentable
-    if eps and bv and eps > 0 and bv > 0:
-        modelos.append(math.sqrt(22.5 * eps * bv))
+    # (Graham eliminado: castigaba demasiado a growth/tech)
 
     # P/E de referencia: usa P/E TTM, si falta usa Forward P/E, si falta usa 18 (mercado)
     pe_ref = None
@@ -203,44 +201,47 @@ def calc_fair_value(fund, pe_hist, precio_actual):
         pe_ref = pe_fwd_val
     else:
         pe_ref = 18.0  # P/E promedio de mercado como último recurso
-    pe_ok = max(8, min(pe_ref, 40))  # saneado a rango 8-40
+    pe_ok = max(8, min(pe_ref, 55))  # saneado a rango 8-55
 
     # Modelo 2: Forward EPS × P/E de referencia
     if feps and feps > 0:
         modelos.append(feps * pe_ok)
 
-    # Modelo 3: EPS proyectado 5A con crecimiento, descontado al 10%
+    # Modelo 3: EPS proyectado 5A con crecimiento (cap 35%), descontado al 9%
     if eps and eps > 0:
-        gr = max(-0.05, min(g if g else 0.08, 0.25))
+        gr = max(-0.05, min(g if g else 0.08, 0.35))
         eps_fut = eps * (1 + gr) ** 5
-        modelos.append((eps_fut * pe_ok) / (1.10 ** 5))
+        modelos.append((eps_fut * pe_ok) / (1.09 ** 5))
 
     # Modelo 4: si hay EPS forward pero no TTM, igual estima con forward
     if (not eps or eps <= 0) and feps and feps > 0:
-        gr = max(-0.05, min(g if g else 0.08, 0.25))
+        gr = max(-0.05, min(g if g else 0.08, 0.35))
         eps_fut = feps * (1 + gr) ** 4
-        modelos.append((eps_fut * pe_ok) / (1.10 ** 4))
+        modelos.append((eps_fut * pe_ok) / (1.09 ** 4))
 
     if not modelos:
+        if target and target > 0:
+            fv = target
+            up = (fv - precio_actual) / precio_actual * 100
+            if up >= 15:   txt = f"🟢 +{up:.0f}%"
+            elif up >= 0:  txt = f"⚪ +{up:.0f}%"
+            elif up >= -15: txt = f"🟡 {up:.0f}%"
+            else:          txt = f"🔴 {up:.0f}%"
+            return (f"${fv:.0f}", txt, up)
         return ("—", "—", None)
 
     fv = sum(modelos) / len(modelos)
+
+    # Acercar al consenso si el modelo se aleja >40% del Target
+    if target and target > 0:
+        if abs(fv - target) / target > 0.40:
+            fv = (fv + target) / 2
     up = (fv - precio_actual) / precio_actual * 100
     if up >= 15:   txt = f"🟢 +{up:.0f}%"
     elif up >= 0:  txt = f"⚪ +{up:.0f}%"
     elif up >= -15: txt = f"🟡 {up:.0f}%"
     else:          txt = f"🔴 {up:.0f}%"
     return (f"${fv:.0f}", txt, up)
-    try:
-        fv = math.sqrt(22.5 * eps_ttm * book_value)
-        up = (fv - precio_actual) / precio_actual * 100
-        if up >= 15:   txt = f"🟢 +{up:.0f}%"
-        elif up >= 0:  txt = f"⚪ +{up:.0f}%"
-        elif up >= -15: txt = f"🟡 {up:.0f}%"
-        else:          txt = f"🔴 {up:.0f}%"
-        return (f"${fv:.0f}", txt, up)
-    except:
-        return ("—", "—", None)
 
 def consenso(rec_mean, n_analysts):
     """recommendationMean (1-5) a texto + emoji. n analistas opcional."""
