@@ -31,6 +31,7 @@ st.markdown("""
 }
 html,body,[class*="css"]{font-family:'DM Mono',monospace;background:var(--bg)!important;color:var(--text)}
 [data-testid="stSidebar"],[data-testid="collapsedControl"],#MainMenu,footer,header{display:none!important}
+[data-testid="stHeaderActionElements"],.stMarkdown a.anchor-link,h1 a,h2 a,h3 a{display:none!important}
 .block-container{padding:1rem 1.2rem 2rem!important;max-width:1500px!important}
 
 .header{background:linear-gradient(135deg,var(--surface),#0f1928);border:1px solid var(--border2);border-radius:12px;padding:18px 24px;margin-bottom:20px;display:flex;align-items:center;justify-content:space-between}
@@ -611,7 +612,6 @@ st.markdown("""
     <h1>🔥 Rebote <span>Screener</span> 🔥</h1>
     <p>REBOTE EMA 50/200/325 · SOBREVENTA · BOLLINGER · KDJ+MACD · FUNDAMENTAL</p>
   </div>
-  <div class="badge">WIP</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -896,7 +896,7 @@ with st.expander("🧮 Calculadora de gestion (SL / TP / tamano de posicion)", e
         else:
             entrada = st.number_input("Precio de entrada ($)", min_value=0.0, value=float(round(precio_actual,2)) if precio_actual>0 else 0.0, step=0.01, format="%.2f")
     with e3:
-        monto = st.number_input("Monto a invertir (USD)", min_value=0.0, value=1000.0, step=100.0, format="%.0f")
+        monto = st.number_input("Monto a invertir (USD)", min_value=0.0, value=100.0, step=50.0, format="%.0f")
 
     sl_mult  = {1: 1.3, 2: 1.5, 3: 1.8}[banda]
     tp1_mult = {1: 1.6, 2: 2.0, 3: 2.5}[banda]
@@ -909,27 +909,33 @@ with st.expander("🧮 Calculadora de gestion (SL / TP / tamano de posicion)", e
         riesgo_usd = (entrada - sl)
         rr1 = (tp1 - entrada) / riesgo_usd if riesgo_usd > 0 else 0
         rr2 = (tp2 - entrada) / riesgo_usd if riesgo_usd > 0 else 0
-        acciones = int(monto / entrada) if entrada > 0 else 0
+        acciones = (monto / entrada) if entrada > 0 else 0   # fracciones (Moomoo lo permite)
         riesgo_total = acciones * riesgo_usd
         riesgo_pct = (riesgo_total / monto * 100) if monto > 0 else 0
         b_txt = {1:"🟦 B1 tranquila", 2:"🟨 B2 hibrida", 3:"🟥 B3 volatil"}[banda]
         titulo = (sym_label or "Accion") + "  ·  " + b_txt
         st.markdown("<div style='font-family:Syne,sans-serif;font-weight:700;color:#00d4ff;font-size:14px;margin:6px 0;'>" + titulo + "</div>", unsafe_allow_html=True)
+        # resultado en $ de cada nivel: VALOR FINAL (monto + neto) y neto entre paréntesis
+        res_sl  = acciones * (sl - entrada)    # neto negativo (pérdida)
+        res_tp1 = acciones * (tp1 - entrada)   # neto ganancia
+        res_tp2 = acciones * (tp2 - entrada)   # neto ganancia
+        def _fmt_res(neto):
+            final = monto + neto
+            signo = "+" if neto >= 0 else "-"
+            return "$" + f"{final:.2f}" + " <span style='font-size:9px;color:#718096'>(" + signo + "$" + f"{abs(neto):.2f}" + ")</span>"
         filas = [
-            ("Stop Loss", "$" + f"{sl:.2f}", "-" + f"{(entrada-sl)/entrada*100:.1f}" + "%", f"{sl_mult}" + "x ATR"),
-            ("Take Profit 1", "$" + f"{tp1:.2f}", "+" + f"{(tp1-entrada)/entrada*100:.1f}" + "%", f"{tp1_mult}" + "x ATR · R:R " + f"{rr1:.1f}"),
-            ("Take Profit 2", "$" + f"{tp2:.2f}", "+" + f"{(tp2-entrada)/entrada*100:.1f}" + "%", f"{tp2_mult}" + "x ATR · R:R " + f"{rr2:.1f}"),
+            ("Stop Loss", "$" + f"{sl:.2f}", "-" + f"{(entrada-sl)/entrada*100:.1f}" + "%", _fmt_res(res_sl), f"{sl_mult}" + "x ATR"),
+            ("Take Profit 1", "$" + f"{tp1:.2f}", "+" + f"{(tp1-entrada)/entrada*100:.1f}" + "%", _fmt_res(res_tp1), f"{tp1_mult}" + "x ATR · R:R " + f"{rr1:.1f}"),
+            ("Take Profit 2", "$" + f"{tp2:.2f}", "+" + f"{(tp2-entrada)/entrada*100:.1f}" + "%", _fmt_res(res_tp2), f"{tp2_mult}" + "x ATR · R:R " + f"{rr2:.1f}"),
         ]
-        html = '<div class="tw"><table><thead><tr><th style="text-align:left">Nivel</th><th>Precio</th><th>%</th><th>Base</th></tr></thead><tbody>'
-        for n, p, pct, base in filas:
+        html = '<div class="tw"><table><thead><tr><th style="text-align:left">Nivel</th><th>Precio</th><th>%</th><th>Resultado</th><th>Base</th></tr></thead><tbody>'
+        for n, p, pct, res, base in filas:
             col = "#00e5a0" if "Profit" in n else "#ff4d6d"
-            html += '<tr><td style="text-align:left;color:' + col + ';font-weight:600">' + n + '</td><td>' + p + '</td><td style="color:' + col + '">' + pct + '</td><td style="font-size:10px;color:#718096">' + base + '</td></tr>'
+            html += '<tr><td style="text-align:left;color:' + col + ';font-weight:600">' + n + '</td><td>' + p + '</td><td style="color:' + col + '">' + pct + '</td><td style="color:' + col + ';font-weight:600">' + res + '</td><td style="font-size:10px;color:#718096">' + base + '</td></tr>'
         html += "</tbody></table></div>"
         st.markdown(html, unsafe_allow_html=True)
-        resumen = ("💰 <b>" + str(acciones) + " acciones</b> con $" + f"{monto:.0f}" + " a $" + f"{entrada:.2f}"
-                   + " · Riesgo si toca SL: <b style='color:#ff4d6d'>$" + f"{riesgo_total:.0f}" + "</b> (" + f"{riesgo_pct:.1f}" + "%)"
-                   + " · Ganancia TP1: <b style='color:#00e5a0'>$" + f"{acciones*(tp1-entrada):.0f}" + "</b>"
-                   + " · TP2: <b style='color:#00e5a0'>$" + f"{acciones*(tp2-entrada):.0f}" + "</b>")
+        resumen = ("💰 <b>" + f"{acciones:.2f}" + " acciones</b> con $" + f"{monto:.0f}" + " a $" + f"{entrada:.2f}"
+                   + " · Riesgo si toca SL: <b style='color:#ff4d6d'>$" + f"{abs(riesgo_total):.2f}" + "</b> (" + f"{riesgo_pct:.1f}" + "%)")
         st.markdown("<div style='font-size:12px;color:#a0aec0;margin-top:8px;line-height:1.7;'>" + resumen + "</div>", unsafe_allow_html=True)
         st.markdown("<div style='font-size:10px;color:#4a5568;margin-top:6px;'>SL/TP por ATR ajustados a la banda. Referencial, no es recomendacion. Gestiona en Moomoo.</div>", unsafe_allow_html=True)
     else:
