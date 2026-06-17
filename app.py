@@ -313,71 +313,58 @@ def calc_upside(precio_actual, target_mean):
 
 
 def calc_fair_value(fund, pe_hist, precio_actual):
-    """FV promedio de modelos de múltiplos: Forward P/E + Crecimiento descontado.
-    Robusto ante datos faltantes. Devuelve (texto_fv, upside_txt, upside_raw)."""
+    """FV: promedio de Graham + Forward P/E + Crecimiento descontado.
+    Modelo original (el que mejor generaliza con datos gratuitos).
+    Es un valor APROXIMADO por multiplos, no un veredicto. Validar en TSIT.
+    Devuelve (texto_fv, upside_txt, upside_raw)."""
+    import math as _math
     eps   = fund.get("eps_ttm")
     bv    = fund.get("book_value")
     feps  = fund.get("fwd_eps")
     g     = fund.get("growth")
     pe_fwd_val = fund.get("pe_fwd")
-    target = fund.get("target_mean")
 
     modelos = []
 
-    # (Graham eliminado del promedio: castigaba demasiado a growth/tech sin book value)
+    # Modelo 1: Graham sqrt(22.5 x EPS x BV) - ancla de valor conservadora
+    if eps and bv and eps > 0 and bv > 0:
+        modelos.append(_math.sqrt(22.5 * eps * bv))
 
-    # P/E de referencia: usa P/E TTM, si falta usa Forward P/E, si falta usa 18 (mercado)
-    pe_ref = None
+    # P/E de referencia: TTM -> Forward -> 18 (mercado)
     if pe_hist and pe_hist > 0:
         pe_ref = pe_hist
     elif pe_fwd_val and pe_fwd_val > 0:
         pe_ref = pe_fwd_val
     else:
-        pe_ref = 18.0  # P/E promedio de mercado como último recurso
-    pe_ok = max(8, min(pe_ref, 45))  # rango 8-45 (punto medio: ni castiga calidad ni infla)
+        pe_ref = 18.0
+    pe_ok = max(8, min(pe_ref, 40))  # rango 8-40
 
-    # Modelo 2: Forward EPS × P/E de referencia
+    # Modelo 2: Forward EPS x P/E de referencia
     if feps and feps > 0:
         modelos.append(feps * pe_ok)
 
-    # Modelo 3: EPS proyectado 5A con crecimiento (cap 28%), descontado al 9.5%
+    # Modelo 3: EPS proyectado 5A con crecimiento (cap 25%), descontado al 10%
     if eps and eps > 0:
-        gr = max(-0.05, min(g if g else 0.08, 0.28))
-        eps_fut = eps * (1 + gr) ** 5
-        modelos.append((eps_fut * pe_ok) / (1.095 ** 5))
+        gr = max(-0.05, min(g if g else 0.08, 0.25))
+        modelos.append((eps * (1 + gr) ** 5 * pe_ok) / (1.10 ** 5))
 
-    # Modelo 4: si hay EPS forward pero no TTM, igual estima con forward
+    # Modelo 4: si hay EPS forward pero no TTM, estima con forward
     if (not eps or eps <= 0) and feps and feps > 0:
-        gr = max(-0.05, min(g if g else 0.08, 0.28))
-        eps_fut = feps * (1 + gr) ** 4
-        modelos.append((eps_fut * pe_ok) / (1.095 ** 4))
+        gr = max(-0.05, min(g if g else 0.08, 0.25))
+        modelos.append((feps * (1 + gr) ** 4 * pe_ok) / (1.10 ** 4))
 
     if not modelos:
-        # Sin EPS utilizable: si hay Target de analistas, úsalo como referencia
-        if target and target > 0:
-            fv = target
-            up = (fv - precio_actual) / precio_actual * 100
-            if up >= 15:   txt = f"🟢 +{up:.0f}%"
-            elif up >= 0:  txt = f"⚪ +{up:.0f}%"
-            elif up >= -15: txt = f"🟡 {up:.0f}%"
-            else:          txt = f"🔴 {up:.0f}%"
-            return (f"${fv:.0f}", txt, up)
         return ("—", "—", None)
 
     fv = sum(modelos) / len(modelos)
 
-    # Ajuste: si el FV se aleja >50% del Target, ponderar 65% modelo / 35% Target
-    # (corrige solo casos extremos sin inflar el caso general).
-    if target and target > 0:
-        desvio = abs(fv - target) / target
-        if desvio > 0.50:
-            fv = 0.65 * fv + 0.35 * target
     up = (fv - precio_actual) / precio_actual * 100
     if up >= 15:   txt = f"🟢 +{up:.0f}%"
     elif up >= 0:  txt = f"⚪ +{up:.0f}%"
     elif up >= -15: txt = f"🟡 {up:.0f}%"
     else:          txt = f"🔴 {up:.0f}%"
     return (f"${fv:.0f}", txt, up)
+
 
 def consenso(rec_mean, n_analysts):
     """recommendationMean (1-5) a texto + emoji. n analistas opcional."""
@@ -833,7 +820,7 @@ def fetch_fund(item):
     pef = fund.get("pe_fwd")
     item["pe_fwd"] = f"{pef:.1f}" if pef and pef > 0 else "—"
 
-    # Fair Value promedio de múltiplos (Fwd P/E + Crecimiento descontado)
+    # Fair Value: promedio Graham + Fwd P/E + Crecimiento (valor aproximado)
     pe_hist_raw = fund.get("pe_ttm")
     fv_txt, fv_up_txt, fv_up_raw = calc_fair_value(fund, pe_hist_raw, item["precio"])
     item["fv"] = fv_txt
@@ -1205,7 +1192,7 @@ st.markdown("""<div class="glosario">
 <b>🟢DI+</b> DI+&gt;DI- (presión alcista, separa giro real de trampa) &nbsp;·&nbsp;
 <b>💎VALOR</b> FV ≥+15% (suma 1) · <b>💎💎</b> FV Y Target ambos ≥+15% (distintivo, no suma extra) &nbsp;·&nbsp;
 <b>ATR</b> rango medio diario en $ (14d, Wilder) — úsalo para fijar Stop Loss y Take Profit &nbsp;·&nbsp;
-<b>Fair Value</b> Fwd P/E + crecimiento · <b>Upside</b> % vs Target
+<b>Fair Value</b> aprox: Graham + Fwd P/E + crecimiento (referencial) · <b>Upside</b> % vs Target
 </div>""", unsafe_allow_html=True)
 
 def tabla_puntaje(titulo, lista, color):
@@ -1239,7 +1226,7 @@ def render_seccion(titulo, css, key, glosario):
         return
     st.markdown(tabla_html(items, con_score=False), unsafe_allow_html=True)
 
-GLOS_FUND = "<b>Fair Value</b>: Fwd P/E + crecimiento descontado &nbsp;·&nbsp; <b>vs FV</b>: % vs Fair Value &nbsp;·&nbsp; <b>Target 12M</b>: objetivo analistas &nbsp;·&nbsp; <b>Upside</b>: % vs Target"
+GLOS_FUND = "<b>Fair Value</b>: aprox por múltiplos (Graham + Fwd P/E + crecimiento), referencial &nbsp;·&nbsp; <b>vs FV</b>: % vs Fair Value &nbsp;·&nbsp; <b>Target 12M</b>: objetivo analistas &nbsp;·&nbsp; <b>Upside</b>: % vs Target"
 
 render_seccion(
     "🔴 RSI EN SOBREVENTA — RSI < 35", "sec-os", "p_rsi",
