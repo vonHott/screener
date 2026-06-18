@@ -824,6 +824,27 @@ def fetch_fund(item):
     return item
 
 @st.cache_data(ttl=300, show_spinner=False)
+def precios_actuales(watchlist_tuple):
+    """Último precio de cierre de CADA ticker de la watchlist (pase o no el filtro).
+    Sirve para el 'Precio hoy' del historial. Reutiliza el batch cacheado."""
+    df_batch = descargar_batch(watchlist_tuple)
+    precios = {}
+    for sym in watchlist_tuple:
+        try:
+            if isinstance(df_batch.columns, pd.MultiIndex):
+                if sym in df_batch.columns.get_level_values(0):
+                    cl = df_batch[sym]["Close"].dropna()
+                    if len(cl) > 0:
+                        precios[sym] = float(cl.iloc[-1])
+            else:
+                cl = df_batch["Close"].dropna()
+                if len(cl) > 0:
+                    precios[sym] = float(cl.iloc[-1])
+        except Exception:
+            pass
+    return precios
+
+@st.cache_data(ttl=300, show_spinner=False)
 def barrido_completo(watchlist_tuple):
     """Barrido completo cacheado: descarga + indicadores + fundamentales.
     Mientras la watchlist no cambie, un rerun reutiliza este resultado (instantaneo)."""
@@ -857,8 +878,8 @@ def barrido_completo(watchlist_tuple):
 with st.spinner(f"Escaneando {len(WATCHLIST)} tickers..."):
     todos = barrido_completo(tuple(WATCHLIST))
 
-# Precio REAL de hoy por ticker (del barrido) para comparar en el historial
-_precios_hoy = {x["sym"]: x["precio"] for x in todos}
+# Precio REAL de hoy de TODA la watchlist (no solo candidatos) para el historial
+_precios_hoy = precios_actuales(tuple(WATCHLIST))
 
 def _precio_num_h(s):
     try: return float(str(s).replace("$","").replace(",","").strip())
