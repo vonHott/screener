@@ -763,25 +763,6 @@ def leer_historial():
     return []
 
 _hist = leer_historial()
-_label = f"\U0001F4F8 Historial TOP PICKS - ultimos {len(_hist)} dias (cierre NY)" if _hist else "\U0001F4F8 Historial TOP PICKS - se llena solo tras el cierre de NY"
-with st.expander(_label, expanded=False):
-    st.markdown('<div style="font-size:11px;color:#4a5568;margin-bottom:8px;">Foto automatica de las TOP (score >= 4) al cierre de NY. Memoria de 15 dias.</div>', unsafe_allow_html=True)
-    if not _hist:
-        st.markdown('<div style="color:#718096;font-size:12px;padding:8px 0;">Aun no hay fotos guardadas. La primera aparecera tras la proxima ejecucion automatica (tras el cierre de NY, lun-vie).</div>', unsafe_allow_html=True)
-    else:
-        for foto in reversed(_hist):
-            fecha = foto.get("fecha","?")
-            tops = foto.get("tops",[])
-            if not tops:
-                st.markdown(f'<div style="color:#718096;font-size:12px;margin:6px 0;"><b>{fecha}</b> - sin TOP PICKS</div>', unsafe_allow_html=True)
-                continue
-            filas = ""
-            for t in tops:
-                filas += '<tr><td style="text-align:left"><a class="tk" href="' + finviz_url(t["sym"]) + '" target="_blank">' + t["sym"] + '</a></td><td style="text-align:center;color:#00e5a0;font-weight:700">' + str(t["score"]) + '</td><td style="font-size:10px">' + t.get("gatillos","") + '</td><td>' + t.get("precio","-") + '</td><td>' + t.get("fv","-") + '</td><td>' + t.get("upside","-") + '</td><td>' + t.get("rsi","-") + '</td><td style="font-size:10px">' + t.get("consenso","-") + '</td></tr>'
-            titulo = '<div style="font-family:Syne,sans-serif;font-weight:700;color:#00d4ff;font-size:13px;margin-bottom:4px;">' + fecha + ' - ' + str(len(tops)) + ' picks</div>'
-            tabla = '<div class="tw"><table><thead><tr><th style="text-align:left">Ticker</th><th style="text-align:center">Sc</th><th>Gatillos</th><th>Precio</th><th>FV</th><th>Upside</th><th>RSI</th><th>Consenso</th></tr></thead><tbody>' + filas + '</tbody></table></div>'
-            st.markdown('<div style="margin:10px 0;">' + titulo + tabla + '</div>', unsafe_allow_html=True)
-
 # ======================================================================
 # ESCANEO AUTOMATICO - barrido COMPLETO cacheado (rerun instantaneo)
 # ======================================================================
@@ -875,6 +856,49 @@ def barrido_completo(watchlist_tuple):
 # Ejecutar (o reutilizar cache). Spinner solo la primera vez.
 with st.spinner(f"Escaneando {len(WATCHLIST)} tickers..."):
     todos = barrido_completo(tuple(WATCHLIST))
+
+# Precio REAL de hoy por ticker (del barrido) para comparar en el historial
+_precios_hoy = {x["sym"]: x["precio"] for x in todos}
+
+def _precio_num_h(s):
+    try: return float(str(s).replace("$","").replace(",","").strip())
+    except: return None
+
+_label = f"\U0001F4F8 Historial TOP PICKS - ultimos {len(_hist)} dias (cierre NY)" if _hist else "\U0001F4F8 Historial TOP PICKS - se llena solo tras el cierre de NY"
+with st.expander(_label, expanded=False):
+    st.markdown('<div style="font-size:11px;color:#4a5568;margin-bottom:8px;">Foto automatica de las TOP (score >= 4) al cierre de NY. Memoria de 15 dias.</div>', unsafe_allow_html=True)
+    if not _hist:
+        st.markdown('<div style="color:#718096;font-size:12px;padding:8px 0;">Aun no hay fotos guardadas. La primera aparecera tras la proxima ejecucion automatica (tras el cierre de NY, lun-vie).</div>', unsafe_allow_html=True)
+    else:
+        for foto in reversed(_hist):
+            fecha = foto.get("fecha","?")
+            tops = foto.get("tops",[])
+            if not tops:
+                st.markdown(f'<div style="color:#718096;font-size:12px;margin:6px 0;"><b>{fecha}</b> - sin TOP PICKS</div>', unsafe_allow_html=True)
+                continue
+            filas = ""
+            for t in tops:
+                sym = t["sym"]
+                precio_top = t.get("precio","-")          # precio el día que fue TOP
+                precio_hoy = _precios_hoy.get(sym)         # precio real de hoy (del barrido)
+                # construir celda "Precio hoy" con color según subió/bajó vs el día TOP
+                if precio_hoy is None:
+                    celda_hoy = '<td style="color:#4a5568">—</td>'
+                else:
+                    p0 = _precio_num_h(precio_top)
+                    ph = precio_hoy
+                    if p0 and ph and p0 > 0:
+                        chg = (ph - p0) / p0 * 100
+                        col = "#00e5a0" if chg >= 0 else "#ff4d6d"
+                        sig = "+" if chg >= 0 else ""
+                        celda_hoy = '<td style="font-weight:700;color:' + col + '">$' + f"{ph:.2f}" + ' <span style="font-size:9px;font-weight:400">(' + sig + f"{chg:.1f}" + '%)</span></td>'
+                    else:
+                        celda_hoy = '<td style="font-weight:700">$' + f"{ph:.2f}" + '</td>'
+                filas += '<tr><td style="text-align:left"><a class="tk" href="' + finviz_url(sym) + '" target="_blank">' + sym + '</a></td><td style="text-align:center;color:#00e5a0;font-weight:700">' + str(t["score"]) + '</td><td style="font-size:10px">' + t.get("gatillos","") + '</td><td>' + precio_top + '</td>' + celda_hoy + '<td>' + t.get("fv","-") + '</td><td>' + t.get("upside","-") + '</td><td>' + t.get("rsi","-") + '</td><td style="font-size:10px">' + t.get("consenso","-") + '</td></tr>'
+            titulo = '<div style="font-family:Syne,sans-serif;font-weight:700;color:#00d4ff;font-size:13px;margin-bottom:4px;">' + fecha + ' - ' + str(len(tops)) + ' picks</div>'
+            tabla = '<div class="tw"><table><thead><tr><th style="text-align:left">Ticker</th><th style="text-align:center">Sc</th><th>Gatillos</th><th>Precio</th><th style="color:#00d4ff">Precio hoy</th><th>FV</th><th>Upside</th><th>RSI</th><th>Consenso</th></tr></thead><tbody>' + filas + '</tbody></table></div>'
+            st.markdown('<div style="margin:10px 0;">' + titulo + tabla + '</div>', unsafe_allow_html=True)
+
 
 # ======================================================================
 # CALCULADORA DE GESTION (candidato del barrido o manual)
