@@ -1,8 +1,9 @@
 # ======================================================================
-# SCREENER DE REBOTES + FUNDAMENTAL — V FINAL
+# SCREENER DE REBOTES + FUNDAMENTAL — V FINAL (con 4 mejoras)
 # Ejecuta automaticamente al cargar · Sin botones · Sin bandas
 # 4 gatillos de rebote (EMA 50/200/325) + analisis fundamental
-# Score extra si esta bajo FV y bajo Target
+# Mejoras: filtro de regimen SPY, DI+/GIRO obligatorio, VALOR fuera del
+#          score de swing, penalizacion de cuchillos de alta volatilidad
 # ======================================================================
 
 import streamlit as st
@@ -451,7 +452,24 @@ def get_market_data():
     return result, vix, btc_pct, btc_price
 
 # ======================================================================
+# REGIMEN DE MERCADO (CAMBIO 1) — SPY vs su EMA50
+# ======================================================================
+@st.cache_data(ttl=300, show_spinner=False)
+def regimen_alcista():
+    """True si el SPY cotiza sobre su EMA50 (régimen alcista).
+    En downtrend castigamos los cuchillos (reversión sin DI+ y bajo su MA200)."""
+    try:
+        spy = yf.Ticker("SPY").history(period="1y")['Close'].dropna()
+        if len(spy) < 50:
+            return True                       # sin datos suficientes → neutral
+        ema50 = spy.ewm(span=50, adjust=False).mean()
+        return float(spy.iloc[-1]) > float(ema50.iloc[-1])
+    except Exception:
+        return True                           # ante fallo → no castigar
+
+# ======================================================================
 # ANALIZAR TICKER — 4 gatillos de rebote (recibe df ya descargado)
+# Incluye: filtro DI+/GIRO (cambio 2) y penalización de cuchillo vol (cambio 4)
 # ======================================================================
 def analizar_ticker(sym, df):
     if df is None or df.empty or len(df) < 200:
@@ -471,7 +489,7 @@ def analizar_ticker(sym, df):
     hl=(df['High']-df['Low']); hpc=(df['High']-df['Close'].shift(1)).abs(); lpc=(df['Low']-df['Close'].shift(1)).abs()
     df['ATR'] = pd.concat([hl,hpc,lpc],axis=1).max(axis=1).rolling(14).mean()
 
-    # ── ADX ──
+    # ── ADX (con DI+ / DI-) ──
     hd=df['High']-df['High'].shift(1); ld=df['Low'].shift(1)-df['Low']
     dmp=np.where((hd>0)&(hd>ld),hd,0); dmm=np.where((ld>0)&(ld>hd),ld,0)
     t14=pd.concat([hl,hpc,lpc],axis=1).max(axis=1).rolling(14).sum().replace(0,1e-8)
@@ -536,8 +554,7 @@ def analizar_ticker(sym, df):
     # ══════════════════════════════════════════════════════════
     # PUNTOS DE SCORE CON PESOS DIFERENCIADOS
     #   Giro confirmado = 2 (señal rara y potente)
-    #   RSI, Toque, DI  = 1 cada uno
-    #   Valor           = +1 máximo (el ×2 es distintivo visual aparte)
+    #   RSI, Toque, DI  = 1 cada uno  (techo técnico = 5)
     # ══════════════════════════════════════════════════════════
 
     # ── RSI < 35 (sobreventa) CON CONTEXTO de tendencia ──
@@ -574,13 +591,22 @@ def analizar_ticker(sym, df):
     mdi_v = float(df['MDI'].iloc[-1]) if not pd.isna(df['MDI'].iloc[-1]) else 0
     p_di = pdi_v > mdi_v
 
-    # ── VALOR: se calcula en fetch_fund (+1 al score, ×2 es visual) ──
-
     if not (p_rsi or p_giro or p_toque):
         return None
 
-    # Score técnico CON PESOS: Giro vale 2, el resto 1
+    # Score técnico CON PESOS: Giro vale 2, el resto 1 (techo = 5)
     score_tecnico = (2 if p_giro else 0) + (1 if p_rsi else 0) + (1 if p_toque else 0) + (1 if p_di else 0)
+
+    # ═══ CAMBIO 2: DI+/GIRO como confirmación obligatoria ═══
+    # Reversión "desnuda" (sobreventa o toque) sin ningún giro real → es cuchillo
+    if (p_rsi or p_toque) and not p_giro and not p_di:
+        score_tecnico = max(0, score_tecnico - 1)
+
+    # ═══ CAMBIO 4: castigar el perfil de cuchillo de alta volatilidad ═══
+    if banda == 3 and precio < ma200_v:
+        score_tecnico = max(0, score_tecnico - 1)      # B3 bajo MA200 = cae en vertical
+    if banda == 3 and not (p_giro or p_di):
+        score_tecnico = max(0, score_tecnico - 1)      # B3 sin confirmar = fuera del TOP
 
     return {
         "sym": sym,
@@ -600,6 +626,7 @@ def analizar_ticker(sym, df):
         "banda": banda,
         "banda_txt": banda_txt,
         "beta_smooth": bs_v,
+        "ma200": ma200_v,          # ← CAMBIO 1: lo necesita el filtro de régimen
         # detalle de qué soporte tocó (para mostrar)
         "toca_ema": toca_ema,
         "toca_bb":  toca_bb,
@@ -644,7 +671,7 @@ st.markdown("""
 <div class="header">
   <div>
     <h1>🔥 Rebote <span>Screener</span> 🔥</h1>
-    <p>REBOTE EMA 50/200/325 · SOBREVENTA · BOLLINGER · KDJ+MACD · FUNDAMENTAL</p>
+    <p>REBOTE EMA 50/200/325 · SOBREVENTA · BOLLINGER · KDJ+MACD · FUNDAMENTAL · FILTRO RÉGIMEN</p>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -671,15 +698,18 @@ _btc_pct_val = btc_pct if btc_pct is not None else 0
 bcls="up" if _btc_pct_val>=0 else "down"
 bsig="+" if _btc_pct_val>=0 else ""
 bp=f"${btc_price:,.0f}" if (btc_price and btc_price>0) else "—"
-if _vix_val<18 and sp_pct>0:   ctx_cls,ctx_txt="ok","✅ Condiciones favorables"
-elif _vix_val>25 or sp_pct<-1: ctx_cls,ctx_txt="bad","⚠️ Mercado defensivo"
+
+# Régimen del SPY (mismo criterio que usa el screener para castigar cuchillos)
+_alcista_ui = regimen_alcista()
+if _vix_val<18 and sp_pct>0 and _alcista_ui:   ctx_cls,ctx_txt="ok","✅ Condiciones favorables"
+elif _vix_val>25 or sp_pct<-1 or not _alcista_ui: ctx_cls,ctx_txt="bad","⚠️ Mercado defensivo (cuchillos penalizados)" if not _alcista_ui else "⚠️ Mercado defensivo"
 else:                          ctx_cls,ctx_txt="warn","⚪ Contexto mixto"
 
 st.markdown(f"""
 <div class="ctx-grid">
   <div class="ctx-card"><div class="ctx-label">VIX</div><div class="ctx-val">{(f"{_vix_val:.1f}" if vix is not None else "—")}</div><div class="ctx-sub {vcls}">{"✅ Tranquilo" if _vix_val<18 else ("⚠️ Moderado" if _vix_val<25 else "🔴 Alto")}</div></div>
   <div class="ctx-card"><div class="ctx-label">BTC</div><div class="ctx-val {bcls}">{bp}</div><div class="ctx-sub {bcls}">{(f"{bsig}{_btc_pct_val:.2f}%" if btc_pct is not None else "s/d")}</div></div>
-  <div class="ctx-card"><div class="ctx-label">Contexto</div><div class="ctx-val" style="font-size:12px;margin-top:4px;">&nbsp;</div><div class="ctx-sub {ctx_cls}" style="font-size:12px;">{ctx_txt}</div></div>
+  <div class="ctx-card"><div class="ctx-label">Régimen SPY</div><div class="ctx-val" style="font-size:12px;margin-top:4px;">&nbsp;</div><div class="ctx-sub {ctx_cls}" style="font-size:12px;">{("🟢 Alcista (>EMA50)" if _alcista_ui else "🔴 Bajista (<EMA50)")}</div></div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -807,17 +837,14 @@ def fetch_fund(item):
     item["fv"] = fv_txt
     item["fv_up"] = fv_up_txt
 
-    # ── PUNTO 4-5: VALOR (+1 o +2) ──
-    # VALOR suma máximo +1 al score (no infla el ranking técnico).
-    # El ×2 (FV Y Target ambos baratos) es solo distintivo visual 💎💎.
+    # ── VALOR: señal de LARGO PLAZO → solo distintivo visual, NO suma al score (CAMBIO 3) ──
+    # El 💎 sigue siendo útil para la decisión de largo plazo, pero NO infla el ranking de swing.
     fv_ok     = (fv_up_raw is not None and fv_up_raw >= 15)
     target_ok = (target_up_raw is not None and target_up_raw >= 15)
     if fv_ok and target_ok:
-        item["score"] = item["score"] + 1      # +1 al score (no +2)
-        item["valor_pts"] = 2                  # 2 = mostrar 💎💎
+        item["valor_pts"] = 2                  # 💎💎 (barato por FV y por Target)
     elif fv_ok:
-        item["score"] = item["score"] + 1
-        item["valor_pts"] = 1                  # 1 = mostrar 💎
+        item["valor_pts"] = 1                  # 💎
     else:
         item["valor_pts"] = 0
 
@@ -846,7 +873,7 @@ def precios_actuales(watchlist_tuple):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def barrido_completo(watchlist_tuple):
-    """Barrido completo cacheado: descarga + indicadores + fundamentales.
+    """Barrido completo cacheado: descarga + indicadores + fundamentales + filtro de régimen.
     Mientras la watchlist no cambie, un rerun reutiliza este resultado (instantaneo)."""
     df_batch = descargar_batch(watchlist_tuple)
 
@@ -872,6 +899,14 @@ def barrido_completo(watchlist_tuple):
     for x in todos:
         if "valor_pts" not in x:
             x["valor_pts"] = 0
+
+    # ── CAMBIO 1: filtro de régimen — SPY bajo EMA50 → castigar cuchillos ──
+    # Se aplica DENTRO del cache para que no se mute el objeto en cada rerun.
+    if not regimen_alcista():
+        for x in todos:
+            if not x.get("p_di") and x["precio"] < x.get("ma200", x["precio"]):
+                x["score"] = max(0, x["score"] - 2)
+
     return todos
 
 # Ejecutar (o reutilizar cache). Spinner solo la primera vez.
@@ -1062,7 +1097,8 @@ from datetime import datetime as _dt, timezone as _tz, timedelta as _td
 _ahora_ny = _dt.now(_tz(_td(hours=-5)))
 _sello = _ahora_ny.strftime("%Y-%m-%d %H:%M")
 
-st.markdown(f'<div style="text-align:center;color:var(--muted);font-size:12px;padding:8px 0 4px;letter-spacing:.05em;">✅ {len(WATCHLIST)} tickers · {len(todos)} candidatos · 🔴 {n_rsi} RSI&lt;35 · 🟣 {n_giro} giro · 🟡 {n_toque} soporte · 🟢 {n_di} DI+ · 💎 {n_valor} valor</div>', unsafe_allow_html=True)
+_reg_txt = "🟢 régimen alcista" if _alcista_ui else "🔴 régimen bajista (cuchillos −2)"
+st.markdown(f'<div style="text-align:center;color:var(--muted);font-size:12px;padding:8px 0 4px;letter-spacing:.05em;">✅ {len(WATCHLIST)} tickers · {len(todos)} candidatos · 🔴 {n_rsi} RSI&lt;35 · 🟣 {n_giro} giro · 🟡 {n_toque} soporte · 🟢 {n_di} DI+ · 💎 {n_valor} valor · {_reg_txt}</div>', unsafe_allow_html=True)
 
 # Linea de frescura + robustez de datos
 _aviso_fund = ""
@@ -1197,7 +1233,7 @@ def tabla_html(lista, con_score=True):
     return f'<div class="tw"><table id="{tid}"><thead><tr>' + head + '</tr></thead><tbody>' + cuerpo + '</tbody></table></div>'
 
 # ======================================================================
-# TOP PICKS — TABLAS SEPARADAS POR PUNTAJE (4-5 · 3 · 2 · 1)
+# TOP PICKS — TABLAS SEPARADAS POR PUNTAJE (5 · 4 · 3 · 2 · 1)
 # ======================================================================
 # ======================================================================
 # QUE CAMBIO VS AYER (usa el historial guardado)
@@ -1230,12 +1266,13 @@ if _fecha_prev and (_nuevos or _subieron):
 
 st.markdown('<div class="sec sec-os">⭐ TOP PICKS POR PUNTAJE</div>', unsafe_allow_html=True)
 st.markdown("""<div class="glosario">
-<b>Puntaje con pesos (máx 6)</b> &nbsp;·&nbsp;
+<b>Puntaje técnico con pesos (máx 5)</b> &nbsp;·&nbsp;
 <b>🟣GIRO (vale 2)</b> giro KDJ + MACD + cierre&gt;mín ayer + volumen — la señal más fuerte &nbsp;·&nbsp;
 <b>🔴RSI</b> sobreventa sana (sobre MA200) · <b>🔻RSI</b> sobreventa en caída (bajo MA200, cuchillo) &nbsp;·&nbsp;
 <b>🟡EMA / 🔵BB</b> toque EMA 50/200/325 o Bollinger + cierre&gt;mín + volumen &nbsp;·&nbsp;
 <b>🟢DI+</b> DI+&gt;DI- (presión alcista, separa giro real de trampa) &nbsp;·&nbsp;
-<b>💎VALOR</b> FV ≥+15% (suma 1) · <b>💎💎</b> FV Y Target ambos ≥+15% (distintivo, no suma extra) &nbsp;·&nbsp;
+<b>💎VALOR</b> FV ≥+15% (solo visual, NO suma al score) · <b>💎💎</b> FV Y Target ambos ≥+15% &nbsp;·&nbsp;
+<b>Penalizaciones</b>: reversión sin DI+/GIRO −1 · B3 bajo MA200 −1 · B3 sin confirmar −1 · régimen SPY bajista: cuchillo −2 &nbsp;·&nbsp;
 <b>ATR</b> rango medio diario en $ (14d, Wilder) — úsalo para fijar Stop Loss y Take Profit &nbsp;·&nbsp;
 <b>Fair Value</b> aprox: Graham + Fwd P/E + crecimiento (referencial) · <b>Upside</b> % vs Target
 </div>""", unsafe_allow_html=True)
@@ -1247,13 +1284,13 @@ def tabla_puntaje(titulo, lista, color):
     ordenada = sorted(lista, key=lambda x:(-x["score"], x["rsi"]))
     st.markdown(tabla_html(ordenada, con_score=True), unsafe_allow_html=True)
 
-g56 = [x for x in todos if x["score"] >= 5]
+g5  = [x for x in todos if x["score"] >= 5]
 g4  = [x for x in todos if x["score"] == 4]
 g3  = [x for x in todos if x["score"] == 3]
 g2  = [x for x in todos if x["score"] == 2]
 g1  = [x for x in todos if x["score"] == 1]
 
-tabla_puntaje("🏆 PUNTAJE 5-6 — MÁXIMA CONVICCIÓN", g56, "#00e5a0")
+tabla_puntaje("🏆 PUNTAJE 5 — MÁXIMA CONVICCIÓN", g5, "#00e5a0")
 tabla_puntaje("🥇 PUNTAJE 4 — MUY FUERTE", g4, "#00d4ff")
 tabla_puntaje("🥈 PUNTAJE 3 — FUERTE", g3, "#00d4ff")
 tabla_puntaje("🥉 PUNTAJE 2 — MODERADO", g2, "#b48cff")
