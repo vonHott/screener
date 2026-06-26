@@ -3,6 +3,9 @@
 snapshot.py — Foto diaria de las TOP PICKS (score >= 4) del Rebote Screener.
 Corre en GitHub Actions tras el cierre de NY. Guarda en el Gist con memoria de 15 días.
 Autocontenido: no depende de app_mobile.py.
+
+Incluye las 4 mejoras: filtro de régimen SPY, DI+/GIRO obligatorio,
+VALOR fuera del score de swing, penalización de cuchillos de alta volatilidad.
 """
 import os, json, math, urllib.request
 from datetime import datetime, timezone, timedelta
@@ -63,6 +66,19 @@ def leer_tickers_compartidos():
         return [t for t in items if t]
     except Exception:
         return []
+
+# ====================== REGIMEN DE MERCADO (CAMBIO 1) ======================
+def regimen_alcista():
+    """True si el SPY cotiza sobre su EMA50 (régimen alcista).
+    En downtrend castigamos los cuchillos (reversión sin DI+ y bajo su MA200)."""
+    try:
+        spy = yf.Ticker("SPY").history(period="1y")['Close'].dropna()
+        if len(spy) < 50:
+            return True
+        ema50 = spy.ewm(span=50, adjust=False).mean()
+        return float(spy.iloc[-1]) > float(ema50.iloc[-1])
+    except Exception:
+        return True
 
 # ====================== FUNDAMENTALES ======================
 def _num(s):
@@ -247,6 +263,8 @@ def consenso(rec_mean, n_analysts):
     return tag
 
 # ====================== ANÁLISIS TÉCNICO ======================
+# Versión unificada (igual que app_mobile.py): incluye banda de volatilidad,
+# campo ma200, filtro DI+/GIRO (cambio 2) y penalización de cuchillo vol (cambio 4).
 def analizar_ticker(sym, df):
     if df is None or df.empty or len(df) < 200:
         return None
@@ -265,7 +283,7 @@ def analizar_ticker(sym, df):
     hl=(df['High']-df['Low']); hpc=(df['High']-df['Close'].shift(1)).abs(); lpc=(df['Low']-df['Close'].shift(1)).abs()
     df['ATR'] = pd.concat([hl,hpc,lpc],axis=1).max(axis=1).rolling(14).mean()
 
-    # ── ADX ──
+    # ── ADX (con DI+ / DI-) ──
     hd=df['High']-df['High'].shift(1); ld=df['Low'].shift(1)-df['Low']
     dmp=np.where((hd>0)&(hd>ld),hd,0); dmm=np.where((ld>0)&(ld>hd),ld,0)
     t14=pd.concat([hl,hpc,lpc],axis=1).max(axis=1).rolling(14).sum().replace(0,1e-8)
@@ -309,12 +327,29 @@ def analizar_ticker(sym, df):
     adx_v = float(df['ADX'].iloc[-1]) if not pd.isna(df['ADX'].iloc[-1]) else 0
     precio= float(df['Close'].iloc[-1])
 
+    # ── ATR 14d en dólares (Wilder) — para SL/TP ──
+    atr_abs = float(df['ATR'].iloc[-1]) if not pd.isna(df['ATR'].iloc[-1]) else 0
+
+    # ── BANDA DE VOLATILIDAD (STD de retornos 60d, suavizada 20d) ──
+    ret = df['Close'].pct_change() * 100
+    beta_smooth = ret.rolling(60).std().rolling(20).mean()
+    bs_v = float(beta_smooth.iloc[-1]) if not pd.isna(beta_smooth.iloc[-1]) else 1.5
+    if bs_v < 1.0:   banda = 1
+    elif bs_v < 1.8: banda = 2
+    else:            banda = 3
+    banda_txt = {1:"🟦 B1", 2:"🟨 B2", 3:"🟥 B3"}[banda]
+
+    ma50_v  = float(df['MA50'].iloc[-1])
+    ma200_v = float(df['MA200'].iloc[-1])
+    ma325_v = float(df['MA325'].iloc[-1])
+
     # ══════════════════════════════════════════════════════════
-    # 5 PUNTOS INDEPENDIENTES DE SCORE
+    # PUNTOS DE SCORE (Giro=2, RSI/Toque/DI=1 c/u → techo técnico = 5)
     # ══════════════════════════════════════════════════════════
 
-    # ── PUNTO 1: RSI < 35 (sobreventa) ──
+    # ── PUNTO 1: RSI < 35 (sobreventa) con contexto ──
     p_rsi = rsi_v < 35
+    rsi_sana = p_rsi and precio > ma200_v
 
     # ── PUNTO 2: GIRO KDJ + CRUCE MACD + volumen + cierre sobre min ayer ──
     cierre_sobre_min = precio > float(df['Low'].iloc[-2])
@@ -327,9 +362,6 @@ def analizar_ticker(sym, df):
     )
 
     # ── PUNTO 3: TOQUE DE SOPORTE — Bollinger inf. O EMA 50/200/325 desde arriba ──
-    ma50_v  = float(df['MA50'].iloc[-1])
-    ma200_v = float(df['MA200'].iloc[-1])
-    ma325_v = float(df['MA325'].iloc[-1])
     low_v   = float(df['Low'].iloc[-1])
     bb_dn_y = float(df['BB_DN'].iloc[-2])
     low_y   = float(df['Low'].iloc[-2])
@@ -341,21 +373,28 @@ def analizar_ticker(sym, df):
         (low_v <= ma325_v * 1.015 and precio > ma325_v * 0.985)
     )
     toca_bb = (low_y <= bb_dn_y and precio > bb_dn)
-    # Toque válido solo con volumen y cierre sobre mínimo de ayer
     p_toque = (toca_ema or toca_bb) and cierre_sobre_min and vol_ok
 
     # ── PUNTO 4: DIRECCIÓN DI+ > DI- (cambio real vs trampa bajista) ──
     pdi_v = float(df['PDI'].iloc[-1]) if not pd.isna(df['PDI'].iloc[-1]) else 0
     mdi_v = float(df['MDI'].iloc[-1]) if not pd.isna(df['MDI'].iloc[-1]) else 0
-    p_di = pdi_v > mdi_v   # DI+ dominante = presión alcista confirmada
-
-    # ── PUNTO 5-6: VALOR (se calcula en fetch_fund, +1 o +2) ──
+    p_di = pdi_v > mdi_v
 
     if not (p_rsi or p_giro or p_toque):
         return None
 
-    # Score técnico: RSI + Giro + Toque + DI = hasta 4 puntos técnicos
+    # Score técnico: RSI + Giro + Toque + DI (techo = 5)
     score_tecnico = (2 if p_giro else 0) + (1 if p_rsi else 0) + (1 if p_toque else 0) + (1 if p_di else 0)
+
+    # ═══ CAMBIO 2: DI+/GIRO como confirmación obligatoria ═══
+    if (p_rsi or p_toque) and not p_giro and not p_di:
+        score_tecnico = max(0, score_tecnico - 1)
+
+    # ═══ CAMBIO 4: castigar el perfil de cuchillo de alta volatilidad ═══
+    if banda == 3 and precio < ma200_v:
+        score_tecnico = max(0, score_tecnico - 1)      # B3 bajo MA200 = cae en vertical
+    if banda == 3 and not (p_giro or p_di):
+        score_tecnico = max(0, score_tecnico - 1)      # B3 sin confirmar = fuera del TOP
 
     return {
         "sym": sym,
@@ -366,9 +405,14 @@ def analizar_ticker(sym, df):
         "adx": adx_v, "adx_str": f"{adx_v:.1f}",
         "score": score_tecnico,
         "p_rsi":   p_rsi,
+        "rsi_sana": rsi_sana,
         "p_giro":  p_giro,
         "p_toque": p_toque,
         "p_di":    p_di,
+        "atr_abs": atr_abs,
+        "banda": banda,
+        "banda_txt": banda_txt,
+        "ma200": ma200_v,          # ← CAMBIO 1: lo necesita el filtro de régimen
         # detalle de qué soporte tocó (para mostrar)
         "toca_ema": toca_ema,
         "toca_bb":  toca_bb,
@@ -396,8 +440,9 @@ def procesar_fund(item):
     item["consenso"] = consenso(fund.get("rec_mean"), fund.get("n_analysts"))
     fv_ok = (fv_up_raw is not None and fv_up_raw >= 15)
     target_ok = (target_up_raw is not None and target_up_raw >= 15)
-    if fv_ok and target_ok: item["valor_pts"] = 2; item["score"] += 1
-    elif fv_ok:             item["valor_pts"] = 1; item["score"] += 1
+    # ═══ CAMBIO 3: VALOR no suma al score de swing (solo flag visual) ═══
+    if fv_ok and target_ok: item["valor_pts"] = 2
+    elif fv_ok:             item["valor_pts"] = 1
     return item
 
 def gatillos_str(x):
@@ -442,6 +487,13 @@ def main():
     # Fundamentales
     with ThreadPoolExecutor(max_workers=4) as ex:
         todos = list(ex.map(procesar_fund, resultados))
+
+    # ═══ CAMBIO 1: filtro de régimen — SPY bajo EMA50 → castigar cuchillos ═══
+    if not regimen_alcista():
+        print("Régimen SPY bajista (<EMA50): penalizando cuchillos (-2)")
+        for x in todos:
+            if not x.get("p_di") and x["precio"] < x.get("ma200", x["precio"]):
+                x["score"] = max(0, x["score"] - 2)
 
     # Filtrar TOP score >= 4
     tops = [x for x in todos if x["score"] >= SCORE_MIN]
