@@ -966,7 +966,7 @@ with st.expander("🧮 Calculadora de gestion (SL / TP / tamano de posicion)", e
 🟦 <b>B1 tranquila</b> (poca volatilidad, tipo blue chip): SL <b>1.3× ATR</b> · TP1 2.0× · TP2 3.5×<br>
 🟨 <b>B2 hibrida</b> (volatilidad media): SL <b>1.5× ATR</b> · TP1 2.2× · TP2 4.0×<br>
 🟥 <b>B3 volatil</b> (mucho movimiento / especulativa): SL <b>2.0× ATR</b> · TP1 2.8× · TP2 5.0×<br>
-<span style='color:#718096'>El ATR es el rango medio que recorre la accion en un dia. SL/TP se calculan como multiplos del ATR segun la banda.</span>
+<span style='color:#718096'>El ATR es el rango medio que recorre la accion en un dia. B1/B2/B3 son puntos de referencia; con el deslizador de abajo vas de 0.5 (mas ajustado) a 3.5 (mas amplio), y el recomendado queda prefijado segun la volatilidad.</span>
 </div>""", unsafe_allow_html=True)
 
     modo = st.radio("Modo", ["Desde candidato del barrido", "Manual (cualquier accion)"], horizontal=True, label_visibility="collapsed")
@@ -975,7 +975,8 @@ with st.expander("🧮 Calculadora de gestion (SL / TP / tamano de posicion)", e
     _syms = sorted(_mapa.keys())
 
     # Valores que se definiran segun el modo
-    sym_label = ""; precio_actual = 0.0; atr = 0.0; banda = 2
+    sym_label = ""; precio_actual = 0.0; atr = 0.0; banda_reco = 2
+    _slider_key = "nivel_riesgo_manual"
 
     if modo == "Desde candidato del barrido":
         if not _syms:
@@ -988,7 +989,8 @@ with st.expander("🧮 Calculadora de gestion (SL / TP / tamano de posicion)", e
             sym_label = sym_sel
             precio_actual = x["precio"]
             atr = x.get("atr_abs", 0) or 0
-            banda = x.get("banda", 2)
+            banda_reco = x.get("banda", 2)
+            _slider_key = f"nivel_riesgo_{sym_sel}"
             with cc2:
                 st.markdown("<div style='font-size:11px;color:#718096;padding-top:30px;'>Autocompletado: " + x.get("banda_txt","?") + " · ATR $" + f"{atr:.2f}" + " · actual $" + f"{precio_actual:.2f}" + "</div>", unsafe_allow_html=True)
     else:
@@ -1000,10 +1002,43 @@ with st.expander("🧮 Calculadora de gestion (SL / TP / tamano de posicion)", e
             precio_actual = st.number_input("Precio actual ($)", min_value=0.0, value=100.0, step=0.01, format="%.2f")
         with m3:
             atr = st.number_input("ATR ($) — de Moomoo/Finviz", min_value=0.0, value=2.0, step=0.01, format="%.2f")
-        banda_label = st.radio("Banda de volatilidad (elige segun cuanto se mueve la accion)",
-                               ["🟦 B1 tranquila", "🟨 B2 hibrida", "🟥 B3 volatil"],
-                               index=1, horizontal=True)
-        banda = {"🟦 B1 tranquila":1, "🟨 B2 hibrida":2, "🟥 B3 volatil":3}[banda_label]
+        banda_reco = 2
+        _slider_key = "nivel_riesgo_manual"
+
+    # ── DESLIZADOR DE RIESGO ──────────────────────────────────────────────
+    # 0.5 = stop mas ajustado (sales antes) · B1=1.0 · B2=2.0 · B3=3.0 · 3.5 = mas amplio
+    # El recomendado queda prefijado en la banda de volatilidad del activo;
+    # muevelo si quieres gestionar tu riesgo a mano. La tabla de abajo se recalcula sola.
+    _reco_txt = {1:"🟦 B1 tranquila", 2:"🟨 B2 híbrida", 3:"🟥 B3 volátil"}.get(banda_reco, "🟨 B2 híbrida")
+    st.markdown(
+        "<div style='font-size:11px;color:#a0aec0;margin:4px 0 2px;'>Volatilidad recomendada para este activo: <b style='color:#00d4ff'>"
+        + _reco_txt + "</b> (nivel " + f"{float(banda_reco):.1f}" + "). Mueve el deslizador para ajustar tu gestión de riesgo.</div>",
+        unsafe_allow_html=True)
+    nivel = st.slider(
+        "Nivel de riesgo SL/TP",
+        min_value=0.5, max_value=3.5, value=float(banda_reco), step=0.1,
+        key=_slider_key, label_visibility="collapsed",
+        help="Izquierda (0.5) = stop mas ajustado y TPs mas cerca. Derecha (3.5) = stop mas amplio y TPs mas lejos. B1/B2/B3 son los puntos de referencia.",
+    )
+
+    # Interpolar multiplicadores de ATR segun la posicion del deslizador
+    _niv_x   = [0.5, 1.0, 2.0, 3.0, 3.5]
+    sl_mult  = float(np.interp(nivel, _niv_x, [1.0, 1.3, 1.5, 2.0, 2.5]))
+    tp1_mult = float(np.interp(nivel, _niv_x, [1.7, 2.0, 2.2, 2.8, 3.3]))
+    tp2_mult = float(np.interp(nivel, _niv_x, [3.0, 3.5, 4.0, 5.0, 6.0]))
+
+    # Zona donde quedo el deslizador (para mostrar)
+    if   nivel < 1.0:  zona = "⬇️ Ajustado (bajo B1)"
+    elif nivel < 1.5:  zona = "🟦 B1 tranquila"
+    elif nivel < 2.5:  zona = "🟨 B2 híbrida"
+    elif nivel <= 3.0: zona = "🟥 B3 volátil"
+    else:              zona = "⬆️ Amplio (sobre B3)"
+    _es_reco = abs(nivel - float(banda_reco)) < 0.05
+    _tag_reco = "  ✅ recomendado" if _es_reco else "  ✏️ ajustado a mano"
+    st.markdown(
+        "<div style='font-size:12px;color:#a0aec0;margin:2px 0 6px;'>Posición: <b>" + zona + "</b><span style='color:#718096'>"
+        + _tag_reco + "</span> &nbsp;·&nbsp; SL <b>" + f"{sl_mult:.2f}" + "×</b> · TP1 <b>" + f"{tp1_mult:.2f}" + "×</b> · TP2 <b>"
+        + f"{tp2_mult:.2f}" + "×</b> ATR</div>", unsafe_allow_html=True)
 
     # Entrada y monto (comun a ambos modos)
     e1, e2, e3 = st.columns([2,2,2])
@@ -1018,10 +1053,6 @@ with st.expander("🧮 Calculadora de gestion (SL / TP / tamano de posicion)", e
     with e3:
         monto = st.number_input("Monto a invertir (USD)", min_value=0.0, value=100.0, step=50.0, format="%.0f")
 
-    sl_mult  = {1: 1.3, 2: 1.5, 3: 2.0}[banda]
-    tp1_mult = {1: 2.0, 2: 2.2, 3: 2.8}[banda]
-    tp2_mult = {1: 3.5, 2: 4.0, 3: 5.0}[banda]
-
     if entrada > 0 and atr > 0:
         sl  = entrada - atr * sl_mult
         tp1 = entrada + atr * tp1_mult
@@ -1032,8 +1063,7 @@ with st.expander("🧮 Calculadora de gestion (SL / TP / tamano de posicion)", e
         acciones = (monto / entrada) if entrada > 0 else 0   # fracciones (Moomoo lo permite)
         riesgo_total = acciones * riesgo_usd
         riesgo_pct = (riesgo_total / monto * 100) if monto > 0 else 0
-        b_txt = {1:"🟦 B1 tranquila", 2:"🟨 B2 hibrida", 3:"🟥 B3 volatil"}[banda]
-        titulo = (sym_label or "Accion") + "  ·  " + b_txt
+        titulo = (sym_label or "Accion") + "  ·  " + zona
         st.markdown("<div style='font-family:Syne,sans-serif;font-weight:700;color:#00d4ff;font-size:14px;margin:6px 0;'>" + titulo + "</div>", unsafe_allow_html=True)
         # resultado en $ de cada nivel: VALOR FINAL (monto + neto) y neto entre paréntesis
         res_sl  = acciones * (sl - entrada)    # neto negativo (pérdida)
