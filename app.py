@@ -688,12 +688,74 @@ def barrido_completo(watchlist_tuple, lookback):
                 x["score"] = max(0, x["score"] - 2)
     return todos
 
+# ======================================================================
+# ESCANER DE SOBREVENTA PURA — RSI (OSC) < UMBRAL, RADAR INDEPENDIENTE
+# Corre sobre los 290, NO exige señal CRH V5. Es solo un radar de nombres
+# muy sobrevendidos para vigilar/revisar a mano. Usa el MISMO RSI que el
+# motor (OSC simple 14-sum). Marca sano vs cuchillo con SOPORTE_SANO.
+# ======================================================================
+@st.cache_data(ttl=300, show_spinner=False)
+def escanear_sobreventa(watchlist_tuple, umbral=35):
+    df_batch = descargar_batch(watchlist_tuple)
+    res = []
+    for sym in watchlist_tuple:
+        try:
+            if isinstance(df_batch.columns, pd.MultiIndex):
+                df = df_batch[sym].copy() if sym in df_batch.columns.get_level_values(0) else None
+            else:
+                df = df_batch.copy()
+            if df is None or df.empty: continue
+            df = df.dropna(subset=['Close','Volume']).copy()
+            df = df[df['Volume'] > 0].copy()
+            if len(df) < 60: continue
+            C, H, L = df['Close'], df['High'], df['Low']; pc = C.shift(1)
+            # RSI = OSC simple (identico al motor CRH V5)
+            up=(C-pc).clip(lower=0).rolling(14).sum(); dn=(pc-C).clip(lower=0).rolling(14).sum()
+            osc=up/(up+dn).replace(0,np.nan)*100
+            rsi_now = float(osc.iloc[-1]) if not pd.isna(osc.iloc[-1]) else None
+            if rsi_now is None or rsi_now >= umbral: continue
+            # contexto minimo para distinguir rebote-sano de cuchillo
+            ma20=C.ewm(span=20,adjust=False).mean()
+            ma200=C.ewm(span=200,adjust=False).mean()
+            lmin=L.rolling(9).min(); hmax=H.rolling(9).max()
+            rsv=(C-lmin)/(hmax-lmin).replace(0,np.nan)*100
+            kval=rsv.ewm(alpha=1/3,adjust=False).mean(); dval=kval.ewm(alpha=1/3,adjust=False).mean()
+            jv=3*kval-2*dval; j_now=float(jv.iloc[-1]) if not pd.isna(jv.iloc[-1]) else None
+            tr=pd.concat([H-L,(H-pc).abs(),(L-pc).abs()],axis=1).max(axis=1)
+            hd=H-H.shift(1); ld=L.shift(1)-L
+            dmp=pd.Series(np.where((hd>0)&(hd>ld),hd,0.0),index=df.index).rolling(14).sum()
+            dmm=pd.Series(np.where((ld>0)&(ld>hd),ld,0.0),index=df.index).rolling(14).sum()
+            tr14=tr.rolling(14).sum().replace(0,np.nan)
+            pdi=dmp*100/tr14; mdi=dmm*100/tr14
+            adx=((pdi-mdi).abs()/(pdi+mdi).replace(0,np.nan)*100).rolling(9).mean()
+            adx_now=float(adx.iloc[-1]) if not pd.isna(adx.iloc[-1]) else 0.0
+            pdi_now=float(pdi.iloc[-1]) if not pd.isna(pdi.iloc[-1]) else 0.0
+            mdi_now=float(mdi.iloc[-1]) if not pd.isna(mdi.iloc[-1]) else 0.0
+            precio=float(C.iloc[-1])
+            ma200_now=float(ma200.iloc[-1]) if not pd.isna(ma200.iloc[-1]) else precio
+            ma20_now=float(ma20.iloc[-1]) if not pd.isna(ma20.iloc[-1]) else precio
+            ema200_baja=(len(df)>=201) and (float(ma200.iloc[-1])<float(ma200.iloc[-2]))
+            es_bajista_critico=(precio<ma200_now) and ema200_baja and (precio<ma20_now)
+            soporte_sano=not (es_bajista_critico or (adx_now>30 and mdi_now>pdi_now))
+            ret5=None
+            if len(C)>=6:
+                c5=float(C.iloc[-6]); ret5=(precio/c5-1)*100 if c5>0 else None
+            res.append(dict(sym=sym, precio=precio, rsi=rsi_now, j=j_now, adx=adx_now,
+                            ret5=ret5, sano=soporte_sano, bajo_ma200=(precio<ma200_now)))
+        except Exception:
+            continue
+    res.sort(key=lambda x: x["rsi"])   # mas sobrevendido primero
+    return res
+
 # lookback de señal: cuantos dias hacia atras aceptar la señal fresca (1=solo hoy)
 LOOKBACK = 3
+
+UMBRAL_RSI = 35   # sobreventa pura para el radar del final
 
 with st.spinner(f"Escaneando {len(WATCHLIST)} tickers con los gatillos del CRH V5..."):
     todos = barrido_completo(tuple(WATCHLIST), LOOKBACK)
 _precios_hoy = precios_actuales(tuple(WATCHLIST))
+_sobreventa = escanear_sobreventa(tuple(WATCHLIST), UMBRAL_RSI)
 
 # ======================================================================
 # CONTROL DE BLACKOUT (post-filtro en vivo, no re-escanea)
@@ -984,6 +1046,52 @@ if en_blackout:
     st.markdown('<div class="sec sec-ea">⏰ EN VENTANA DE EARNINGS — NO ENTRAR (BLACKOUT)</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="glosario">Estos <b>dispararon una señal CRH V5 válida</b> pero reportan resultados en ≤{dias_black} días hábiles. Aquí es donde el screener viejo pisaba las minas (GDDY −19.6%, FICO −16/−18%). Espera al reporte; si sobrevive y vuelve a disparar, entra entonces.</div>', unsafe_allow_html=True)
     st.markdown(tabla_html(sorted(en_blackout, key=lambda x:(x.get("earn_prox") or 99, -x["score"]))), unsafe_allow_html=True)
+
+# ======================================================================
+# SOBREVENTA PURA — RSI < UMBRAL (radar independiente del CRH V5)
+# ======================================================================
+def _sv_ret_style(v):
+    if v is None: return "color:#4a5568"
+    return "color:#00e5a0;font-weight:600" if v>=0 else "color:#ff4d6d;font-weight:600"
+
+def tabla_sobreventa(lista):
+    cols=["#","Ticker","RSI","J","Ret 5d","ADX","vs MA200","Estado"]
+    head="".join(f'<th>{c}<span class="ar"></span></th>' for c in cols)
+    filas=[]
+    for i,x in enumerate(lista,1):
+        rsi=x["rsi"]; j=x.get("j"); ret5=x.get("ret5"); adx=x.get("adx",0) or 0
+        j_txt=f"{j:.1f}" if j is not None else "—"
+        ret_txt=f"{ret5:+.1f}%" if ret5 is not None else "—"
+        vs200="▼ bajo" if x.get("bajo_ma200") else "▲ sobre"
+        vs200_st="color:#ff4d6d" if x.get("bajo_ma200") else "color:#00e5a0"
+        estado="🟢 sano" if x.get("sano") else "🔴 cuchillo"
+        est_st="color:#00e5a0;font-weight:600" if x.get("sano") else "color:#ff4d6d;font-weight:600"
+        j_st="color:#ff4d6d;font-weight:600" if (j is not None and j<20) else ("color:#ffd166" if (j is not None and j>80) else "color:#4a5568")
+        tk=f'<a class="tk" href="{finviz_url(x["sym"])}" target="_blank">{x["sym"]}</a>'
+        filas.append(
+            f'<tr><td data-s="{i}">{i}</td>'
+            f'<td data-s="{x["sym"]}">{tk}</td>'
+            f'<td data-s="{rsi:.2f}" style="color:#ff4d6d;font-weight:700">{rsi:.1f}</td>'
+            f'<td data-s="{(j if j is not None else 999)}" style="{j_st}">{j_txt}</td>'
+            f'<td data-s="{(ret5 if ret5 is not None else 999)}" style="{_sv_ret_style(ret5)}">{ret_txt}</td>'
+            f'<td data-s="{adx:.2f}" style="color:#a0aec0">{adx:.1f}</td>'
+            f'<td data-s="{(0 if x.get("bajo_ma200") else 1)}" style="{vs200_st}">{vs200}</td>'
+            f'<td data-s="{(1 if x.get("sano") else 0)}" style="{est_st}">{estado}</td></tr>'
+        )
+    return '<div class="tw"><table><thead><tr>'+head+'</tr></thead><tbody>'+"".join(filas)+'</tbody></table></div>'
+
+st.markdown('<div class="sec" style="color:#ff4d6d;border-bottom-color:#ff4d6d;">📉 SOBREVENTA PURA — RSI &lt; 35 (RADAR, NO ES SEÑAL CRH V5)</div>', unsafe_allow_html=True)
+st.markdown(f"""<div class="glosario">
+Escaneo crudo de sobreventa sobre los {len(WATCHLIST)} tickers, <b>independiente de los gatillos CRH V5</b>. Aquí NO hay confirmación de giro ni gates: es solo "quién está muy castigado ahora mismo" para revisar a mano. RSI = OSC simple (el mismo del motor). &nbsp;·&nbsp;
+<b>🟢 sano</b> = pasa SOPORTE_SANO (no está en caída libre ni bajista crítico) → candidato a que dispare un SUELO/BOLL/EARLY del CRH V5 si gira. &nbsp;·&nbsp;
+<b>🔴 cuchillo</b> = bajista estructural o ADX&gt;30 con vendedores dominando → sobreventa que puede seguir cayendo; no comprar por comprar.
+</div>""", unsafe_allow_html=True)
+if _sobreventa:
+    _sanos=sum(1 for x in _sobreventa if x.get("sano"))
+    st.markdown(f'<div style="font-size:11px;color:#718096;margin:2px 0 8px;">{len(_sobreventa)} nombres con RSI &lt; {UMBRAL_RSI} · 🟢 {_sanos} con soporte sano · 🔴 {len(_sobreventa)-_sanos} cuchillos · ordenado del más sobrevendido</div>', unsafe_allow_html=True)
+    st.markdown(tabla_sobreventa(_sobreventa), unsafe_allow_html=True)
+else:
+    st.info(f"Ningún ticker con RSI < {UMBRAL_RSI} ahora mismo. En mercado alcista es normal que la sobreventa escasee.")
 
 # ======================================================================
 # JS DE ORDENAMIENTO
