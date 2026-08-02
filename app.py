@@ -117,6 +117,11 @@ TICKERS = [
     "D","KEYS","B","IGM","PATH","U","TX","BMNR","UL","MNST",
     "QTUM","IYW","IP","ARKQ","BITX","ETHU","CRML","UA","XT","O",
     "CRCL","RACE","CMCSA",
+    # --- Lista actual agregada (ago 2026): 37 tickers ---
+    "TURB","RIVN","BB","DOCU","IOT","PAYP","ULTA","GTLB","CIEN","FIVE",
+    "TEAM","MSI","BSX","HRL","UMAC","CMS","MKC","PEG","COR","AA",
+    "AMC","AMPX","AVAV","GLD","GLW","ICE","IHI","NOC","PL","QNT",
+    "RDW","RKLB","SERV","SPCX","STLA","CSTM","CENX",
 ]
 
 # ======================================================================
