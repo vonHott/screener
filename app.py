@@ -1,20 +1,21 @@
 # ======================================================================
-# SCREENER CRH V2 — RADAR DEL CRH V5 SOBRE LA GRAN LISTA
-# Ejecuta automaticamente al cargar · Sin botones · Sin repasar 290 charts
+# SCREENER CRH V3 — RADAR SOBRE LA GRAN LISTA
+# Ejecuta automaticamente al cargar · Sin botones
 # ----------------------------------------------------------------------
-# QUE CAMBIO VS LA V FINAL (la de 4 gatillos sueltos):
-#   * MOTOR = PORT FIEL DEL CRH V5. Los MISMOS 9 gatillos que corres en
-#     Moomoo (S_PULL, S_IMPU, S_BOLL, S_SUELO, S_MACD, S_EARLY, S_CONT,
-#     S_REBOTE_MA200, S_REC) con sus gates de banda (1.5/3.0) y contexto
-#     (SOPORTE_SANO, PERMITE_MOM, ES_BAJISTA_CRITICO). Esto es lo que
-#     mataba los cuchillos y laterales que la V Final pescaba.
-#   * SEÑAL FRESCA: solo muestra el ticker el dia que la señal DISPARA
-#     (B_SIGNAL = primera vela del raw), no cada dia que sigue activa.
-#     Anti-duplicados (adios FICO marcado 2 dias seguidos).
-#   * BLACKOUT DE EARNINGS: separa los que reportan en <=N dias habiles.
-#     Esto solo te habria ahorrado GDDY -19.6% y ambos FICO -16/-18%.
-#   * RSI = OSC SIMPLE (14-sum) igual que el CRH V5, no Wilder.
-#   * VALOR sigue siendo solo 💎 visual, NO suma al score de swing.
+# MOTOR = crh.py  (port de CRH V3 verificado contra el .ftindex de Moomoo)
+#
+# Ya NO reimplementa la logica aqui dentro. Importa crh.py, el mismo modulo
+# que usa el bot de Telegram. Una sola fuente de verdad: si cambias crh.py,
+# cambian los dos a la vez y no pueden desincronizarse.
+#
+# REQUISITO: crh.py debe estar en la MISMA carpeta que este archivo.
+#
+# Diferencias vs la version anterior (que copiaba el V5 inline):
+#   * Cortes de banda 1.0/1.8 (V3) en vez de 1.5/3.0 (V5)
+#   * Sin gates SOPORTE_SANO / PERMITE_MOM  -> mas candidatos, es lo esperado
+#   * Sin S_REC (no existe en V3): 8 gatillos, no 9
+#   * auto_adjust=False y 3 años de historia, igual que la verificacion
+#   * Cada candidato trae STOP y TP1 reales del sistema
 # ======================================================================
 
 import streamlit as st
@@ -23,9 +24,12 @@ import pandas as pd
 import numpy as np
 import warnings
 from concurrent.futures import ThreadPoolExecutor
+
+from crh import crh          # <-- EL MOTOR
+
 warnings.filterwarnings('ignore')
 
-st.set_page_config(page_title="Screener CRH V2", page_icon="🎯", layout="wide",
+st.set_page_config(page_title="Screener CRH V3", page_icon="🎯", layout="wide",
                    initial_sidebar_state="collapsed")
 
 st.markdown("""
@@ -117,7 +121,6 @@ TICKERS = [
     "D","KEYS","B","IGM","PATH","U","TX","BMNR","UL","MNST",
     "QTUM","IYW","IP","ARKQ","BITX","ETHU","CRML","UA","XT","O",
     "CRCL","RACE","CMCSA",
-    # --- Lista actual agregada (ago 2026): 37 tickers ---
     "TURB","RIVN","BB","DOCU","IOT","PAYP","ULTA","GTLB","CIEN","FIVE",
     "TEAM","MSI","BSX","HRL","UMAC","CMS","MKC","PEG","COR","AA",
     "AMC","AMPX","AVAV","GLD","GLW","ICE","IHI","NOC","PL","QNT",
@@ -174,7 +177,7 @@ def ticker_valido(t):
     return bool(_re.match(r'^[A-Z0-9]{1,7}([\-\.=][A-Z0-9]{1,4})?$', t))
 
 # ======================================================================
-# FUNDAMENTALES (sin cambios: Finviz principal, yfinance respaldo)
+# FUNDAMENTALES
 # ======================================================================
 def _num(s):
     if s is None: return None
@@ -279,14 +282,10 @@ def consenso(rec_mean, n_analysts):
     return f"{tag} ({int(n_analysts)})" if (n_analysts and n_analysts > 0) else tag
 
 # ======================================================================
-# EARNINGS BLACKOUT (fix del diagnostico: GDDY/FICO eran pre-earnings)
-# Se consulta SOLO para candidatos que pasan el filtro tecnico (~10-40),
-# no para los 290. Cache 12h. Cripto/forex/futuros = exentos.
+# EARNINGS BLACKOUT
 # ======================================================================
 @st.cache_data(ttl=43200, show_spinner=False)
 def dias_a_earnings(sym):
-    """Devuelve (dias_al_proximo, dias_desde_ultimo, es_exento).
-    None si no se pudo determinar (se muestra pero se marca '?')."""
     if any(x in sym for x in ['-USD','-F','=X','=F']):
         return (None, None, True)
     try:
@@ -304,7 +303,6 @@ def dias_a_earnings(sym):
         return (None, None, False)
 
 def estado_earnings(d_prox, d_ult, exento, dias_black):
-    """(bloquear, texto). bloquear=True -> va a la seccion de blackout."""
     if exento:
         return (False, "—")
     if d_prox is None and d_ult is None:
@@ -318,7 +316,7 @@ def estado_earnings(d_prox, d_ult, exento, dias_black):
     return (False, "? s/d")
 
 # ======================================================================
-# MARKET DATA + REGIMEN (sin cambios)
+# MARKET DATA + REGIMEN
 # ======================================================================
 @st.cache_data(ttl=300, show_spinner=False)
 def get_market_data():
@@ -377,147 +375,108 @@ def regimen_alcista():
         return True
 
 # ======================================================================
-# ANALIZAR TICKER — PORT FIEL DEL CRH V5 (los 9 gatillos + gates)
-# Devuelve dict solo si B_SIGNAL disparo en las ultimas `lookback` velas.
+# ANALIZAR TICKER — MOTOR crh.py (CRH V3)
 # ======================================================================
+GATILLOS_V3 = [
+    ('S_PULL', 'PULL'), ('S_IMPU', 'IMPU'), ('S_BOLL', 'BOLL'),
+    ('S_SUELO', 'SUELO'), ('S_MACD_CROSS', 'MACD'), ('S_EARLY', 'EARLY'),
+    ('S_CONT', 'CONT'), ('S_REBOTE_MA200', 'REB200'),
+]
+
 def analizar_ticker(sym, df, lookback=3):
-    if df is None or df.empty or len(df) < 220: return None
-    df = df.dropna(subset=['Close','Volume']).copy()
-    df = df[df['Volume'] > 0].copy()
-    if len(df) < 220: return None
-    C, H, L, V = df['Close'], df['High'], df['Low'], df['Volume']
+    """Devuelve dict solo si B_SIGNAL disparo en las ultimas `lookback` velas."""
+    if df is None or df.empty or len(df) < 260:
+        return None
 
-    # --- BANDA (STD 60 suavizada 20; cortes CRH V5 = 1.5/3.0) ---
-    ret = C.pct_change()*100
-    beta = ret.rolling(60).std(ddof=0).rolling(20).mean()
-    banda_pre = pd.Series(np.where(beta<1.5,1,np.where(beta<3.0,2,3)), index=df.index)
+    d = df.dropna(subset=['Close','Volume']).copy()
+    d = d[d['Volume'] > 0]
+    if len(d) < 260:
+        return None
 
-    # --- MEDIAS Y CONTEXTO MACRO ---
-    ma20=C.ewm(span=20,adjust=False).mean(); ma50=C.ewm(span=50,adjust=False).mean(); ma200=C.ewm(span=200,adjust=False).mean()
-    ma20_up=ma20>ma20.shift(1); ma50_sube=ma50>ma50.shift(3); ema200_baja=ma200<ma200.shift(1)
-    es_bajista_critico=(C<ma200)&ema200_baja&(C<ma20)
-    en_tendencia=(((C>ma50)&ma50_sube&(ma50>ma200)).rolling(5).sum()>=3)
+    d.columns = [c.lower() for c in d.columns]
+    try:
+        d = d[['open','high','low','close','volume']].astype(float)
+    except Exception:
+        return None
 
-    # --- ATR Wilder ---
-    pc=C.shift(1); tr=pd.concat([H-L,(H-pc).abs(),(L-pc).abs()],axis=1).max(axis=1)
-    atr=tr.ewm(alpha=1/14,adjust=False).mean()
+    try:
+        r = crh(d)
+    except Exception:
+        return None
 
-    # --- ADX (con DI+/DI-) ---
-    hd=H-H.shift(1); ld=L.shift(1)-L
-    dmp=pd.Series(np.where((hd>0)&(hd>ld),hd,0.0),index=df.index).rolling(14).sum()
-    dmm=pd.Series(np.where((ld>0)&(ld>hd),ld,0.0),index=df.index).rolling(14).sum()
-    tr14=tr.rolling(14).sum().replace(0,np.nan)
-    pdi=dmp*100/tr14; mdi=dmm*100/tr14
-    adx=((pdi-mdi).abs()/(pdi+mdi).replace(0,np.nan)*100).rolling(9).mean()
+    sig = r['B_SIGNAL'].fillna(False).astype(bool)
+    if not sig.iloc[-lookback:].any():
+        return None
 
-    # --- KDJ ---
-    lmin=L.rolling(9).min(); hmax=H.rolling(9).max()
-    rsv=(C-lmin)/(hmax-lmin).replace(0,np.nan)*100
-    kval=rsv.ewm(alpha=1/3,adjust=False).mean(); dval=kval.ewm(alpha=1/3,adjust=False).mean()
-    jv=3*kval-2*dval; giro_j=jv>jv.shift(1)
-    cross_kd=(kval>dval)&(kval.shift(1)<=dval.shift(1))
+    pos = int(np.where(sig.values)[0][-1])
+    barras_desde = int(len(sig) - 1 - pos)
+    i = pos
 
-    # --- MACD ---
-    dif=C.ewm(span=12,adjust=False).mean()-C.ewm(span=26,adjust=False).mean()
-    dea=dif.ewm(span=9,adjust=False).mean(); histo=dif-dea
-    giro_macd=(histo>histo.shift(1))&(histo.shift(1)<=histo.shift(2))
-    macd_conv=(histo<0)&(histo>histo.shift(1))&(histo>histo.shift(2))
-    tendencia_viva=((dif>0)|macd_conv)&ma20_up&(pdi>mdi)&(C>ma50)
+    f_sig = r.iloc[i]
+    f_hoy = r.iloc[-1]
 
-    # --- RSI SIMPLE (OSC como CRH V5, NO Wilder) ---
-    up=(C-pc).clip(lower=0).rolling(14).sum(); dn=(pc-C).clip(lower=0).rolling(14).sum()
-    osc=up/(up+dn).replace(0,np.nan)*100
+    banda_sig = int(f_sig['BANDA_PRE']) if pd.notna(f_sig['BANDA_PRE']) else 2
 
-    # --- Bollinger ---
-    bb_mid=C.rolling(20).mean(); bb_std=C.rolling(20).std(ddof=0); bb_dn=bb_mid-2*bb_std
+    triggers, abrevs = [], []
+    for col, ab in GATILLOS_V3:
+        if bool(f_sig.get(col, False)):
+            if banda_sig == 3 and ab in ('PULL','EARLY'):
+                continue
+            triggers.append(col); abrevs.append(ab)
 
-    # --- Volumen (umbrales CRH V5) ---
-    vma=V.rolling(20).mean()
-    vol_ok=V>vma*1.02; vol_med=V>vma*1.2; vol_alt=V>vma*1.4; vol_soft=V>vma*0.88
+    if not triggers:
+        return None
 
-    # --- Gates de contexto ---
-    adx_cayendo=(adx<adx.shift(2))&(adx<adx.shift(4))
-    en_lateral=adx_cayendo&(C<bb_mid)&(~tendencia_viva)
-    adx_req=pd.Series(np.where(es_bajista_critico,28,np.where(banda_pre==3,22,18)),index=df.index)
-    ma50_alcista=ma50>ma50.shift(5)
-    venia_sobre_ma50=(C.shift(1)>ma50).rolling(3).sum()>=2
-    ma200_plana_sube=ma200>=ma200.shift(3)
-    soporte_sano=~(es_bajista_critico|((adx>30)&(mdi>pdi)))
-    permite_mom=~en_lateral
+    def _n(v, alt=0.0):
+        return float(v) if pd.notna(v) else alt
 
-    # --- LOS 9 GATILLOS DEL CRH V5 ---
-    s_pull=(L<ma50*1.015)&(C>ma50*0.985)&giro_j&vol_ok&ma50_alcista&venia_sobre_ma50
-    s_impu=(C>H.rolling(5).max().shift(1))&(adx>adx_req)&ma20_up&giro_j&vol_ok&permite_mom
-    s_boll=(L.shift(1)<=bb_dn)&(C>bb_dn)&giro_j&giro_macd&vol_soft&soporte_sano
-    s_suelo=(osc<35)&(jv<25)&(C>L.shift(1))&giro_macd&vol_soft&soporte_sano
-    s_macd=(dif>dea)&(dif.shift(1)<=dea.shift(1))&(histo>histo.shift(1))&ma20_up&vol_ok&permite_mom
-    s_early=(osc<40)&(jv<30)&cross_kd&ma20_up&vol_soft&soporte_sano
-    s_cont=(C>H.rolling(10).max().shift(1))&(C>ma50)&ma50_sube&giro_j&permite_mom
-    s_reb200=(L<=ma200*1.01)&(C>ma200)&(C>L.shift(1))&giro_j&ma20_up&ma200_plana_sube&vol_ok
-    s_rec=(C>ma20)&(C.shift(1)<=ma20.shift(1))&ma50_sube&(ma50>ma200)&(C>ma50)&giro_j&vol_soft
+    precio  = _n(f_hoy['close'])
+    atr_v   = _n(f_sig['ATR_V'])
+    pdi_v   = _n(f_hoy['PDI'])
+    mdi_v   = _n(f_hoy['MDI'])
+    osc_v   = _n(f_hoy['OSC'], 50.0)
+    j_v     = _n(f_hoy['J_V'], 50.0)
+    adx_v   = _n(f_hoy['ADX_V'])
 
-    # --- Gating de banda: B3 no admite S_PULL ni S_EARLY ---
-    trig_all=s_pull|s_impu|s_boll|s_suelo|s_macd|s_early|s_cont|s_reb200|s_rec
-    trig_vol=s_impu|s_boll|s_suelo|s_macd|s_cont|s_reb200|s_rec
-    b_raw=pd.Series(np.where(banda_pre==3,trig_vol,trig_all),index=df.index).astype(bool)
-    b_signal=b_raw&(~b_raw.shift(1,fill_value=False))   # SEÑAL FRESCA (primera vela del raw)
+    vma = d['volume'].rolling(20).mean()
+    vol_med_v = bool(d['volume'].iloc[i] > vma.iloc[i] * 1.2) if pd.notna(vma.iloc[i]) else False
+    vol_alt_v = bool(d['volume'].iloc[i] > vma.iloc[i] * 1.4) if pd.notna(vma.iloc[i]) else False
 
-    # --- ¿disparo en las ultimas `lookback` velas? ---
-    recent=b_signal.iloc[-lookback:]
-    if not recent.any(): return None
-    barras_desde=int((len(b_signal)-1)-np.where(b_signal.values)[0][-1])
-    i=len(df)-1-barras_desde   # indice de la vela de señal
+    rev  = {'S_SUELO','S_BOLL','S_EARLY','S_REBOTE_MA200'}
+    mom  = {'S_IMPU','S_CONT','S_MACD_CROSS'}
+    pull = {'S_PULL'}
+    ts = set(triggers)
+    if ts & mom and not ts & rev: tipo = 'Momentum'
+    elif ts & rev and not ts & mom: tipo = 'Reversión'
+    elif ts & pull and not ts & mom and not ts & rev: tipo = 'Pullback'
+    else: tipo = 'Mixto'
 
-    def _f(s):
-        try: return bool(s.iloc[i])
-        except: return False
-    fired={'S_PULL':_f(s_pull),'S_IMPU':_f(s_impu),'S_BOLL':_f(s_boll),'S_SUELO':_f(s_suelo),
-           'S_MACD':_f(s_macd),'S_EARLY':_f(s_early),'S_CONT':_f(s_cont),'S_REB200':_f(s_reb200),'S_REC':_f(s_rec)}
-    banda_sig=int(banda_pre.iloc[i])
-    if banda_sig==3:
-        fired['S_PULL']=False; fired['S_EARLY']=False
-    triggers=[k for k,v in fired.items() if v]
-    if not triggers: return None
-
-    precio=float(C.iloc[-1]); precio_sig=float(C.iloc[i])
-    atr_v=float(atr.iloc[i]) if not pd.isna(atr.iloc[i]) else 0.0
-    pdi_v=float(pdi.iloc[-1]) if not pd.isna(pdi.iloc[-1]) else 0.0
-    mdi_v=float(mdi.iloc[-1]) if not pd.isna(mdi.iloc[-1]) else 0.0
-    vol_med_v=bool(vol_med.iloc[i]); vol_alt_v=bool(vol_alt.iloc[i])
-
-    # --- Tipo de setup ---
-    rev={'S_SUELO','S_BOLL','S_EARLY','S_REB200'}; mom={'S_IMPU','S_CONT','S_MACD'}; pull={'S_PULL','S_REC'}
-    ts=set(triggers)
-    if ts&mom and not ts&rev: tipo='Momentum'
-    elif ts&rev and not ts&mom: tipo='Reversión'
-    elif ts&pull and not ts&mom and not ts&rev: tipo='Pullback'
-    else: tipo='Mixto'
-
-    # --- Convicción 0-5 (SOLO para ordenar; el filtro real son los gates) ---
-    n=len(triggers)
-    conv=(2 if n>=3 else (1 if n==2 else 0)) + (1 if pdi_v>mdi_v else 0) + (1 if vol_med_v else 0) + (1 if banda_sig<=2 else 0)
-    conv=min(conv,5)
-
-    banda_txt={1:"🟦 B1",2:"🟨 B2",3:"🟥 B3"}[banda_sig]
-    abrev={'S_PULL':'PULL','S_IMPU':'IMPU','S_BOLL':'BOLL','S_SUELO':'SUELO','S_MACD':'MACD',
-           'S_EARLY':'EARLY','S_CONT':'CONT','S_REB200':'REB200','S_REC':'REC'}
-    trig_txt=" ".join(abrev[t] for t in triggers)
+    n = len(triggers)
+    conv = ((2 if n >= 3 else (1 if n == 2 else 0))
+            + (1 if pdi_v > mdi_v else 0)
+            + (1 if vol_med_v else 0)
+            + (1 if banda_sig <= 2 else 0))
+    conv = min(conv, 5)
 
     return {
-        "sym": sym, "precio": precio, "precio_str": f"${precio:.2f}", "precio_sig": precio_sig,
-        "osc": float(osc.iloc[-1]) if not pd.isna(osc.iloc[-1]) else 50.0,
-        "rsi_str": f"{osc.iloc[-1]:.1f}" if not pd.isna(osc.iloc[-1]) else "—",
-        "j": float(jv.iloc[-1]) if not pd.isna(jv.iloc[-1]) else 50.0,
-        "j_str": f"{jv.iloc[-1]:.1f}" if not pd.isna(jv.iloc[-1]) else "—",
-        "adx": float(adx.iloc[-1]) if not pd.isna(adx.iloc[-1]) else 0.0,
-        "adx_str": f"{adx.iloc[-1]:.1f}" if not pd.isna(adx.iloc[-1]) else "—",
-        "score": conv, "n_trig": n, "triggers": triggers, "trig_txt": trig_txt, "tipo": tipo,
-        "banda": banda_sig, "banda_txt": banda_txt,
-        "atr_abs": atr_v, "atr_str": f"${atr_v:.2f}" if atr_v>0 else "—",
+        "sym": sym, "precio": precio, "precio_str": f"${precio:.2f}",
+        "precio_sig": _n(f_sig['close']),
+        "osc": osc_v, "rsi_str": f"{osc_v:.1f}",
+        "j": j_v, "j_str": f"{j_v:.1f}",
+        "adx": adx_v, "adx_str": f"{adx_v:.1f}",
+        "score": conv, "n_trig": n, "triggers": triggers,
+        "trig_txt": " ".join(abrevs), "tipo": tipo,
+        "banda": banda_sig,
+        "banda_txt": {1:"🟦 B1",2:"🟨 B2",3:"🟥 B3"}[banda_sig],
+        "atr_abs": atr_v, "atr_str": f"${atr_v:.2f}" if atr_v > 0 else "—",
         "barras_desde": barras_desde,
-        "en_tendencia": bool(en_tendencia.iloc[i]),
-        "pdi": pdi_v, "mdi": mdi_v, "ma200": float(ma200.iloc[-1]),
+        "en_tendencia": bool(f_sig.get('IS_LONG', False)),
+        "pdi": pdi_v, "mdi": mdi_v,
+        "ma200": _n(f_hoy['MA200'], precio),
         "vol_alt": vol_alt_v, "vol_med": vol_med_v,
+        "stop_sys": _n(f_hoy['STOP_FINAL']),
+        "tp1_sys": _n(f_hoy['TP1_LEVEL']),
+        "is_long": bool(f_hoy['IS_LONG']),
     }
 
 # ======================================================================
@@ -525,8 +484,8 @@ def analizar_ticker(sym, df, lookback=3):
 # ======================================================================
 st.markdown("""
 <div class="header"><div>
-  <h1>🎯 Screener <span>CRH V5</span> · radar de la gran lista</h1>
-  <p>9 GATILLOS CRH V5 · GATES DE BANDA + CONTEXTO · SEÑAL FRESCA · BLACKOUT EARNINGS · FUNDAMENTAL</p>
+  <h1>🎯 Screener <span>CRH V3</span> · radar de la gran lista</h1>
+  <p>MOTOR crh.py · 8 GATILLOS · BANDAS 1.0/1.8 · SEÑAL FRESCA · BLACKOUT EARNINGS · FUNDAMENTAL</p>
 </div></div>
 """, unsafe_allow_html=True)
 
@@ -624,8 +583,9 @@ _hist = leer_historial()
 # ======================================================================
 @st.cache_data(ttl=300, show_spinner=False)
 def descargar_batch(tickers_tuple):
-    return yf.download(list(tickers_tuple), period="2y", group_by="ticker",
-                       progress=False, auto_adjust=True, threads=True)
+    # 3 años y auto_adjust=False: igual que la verificacion contra Moomoo
+    return yf.download(list(tickers_tuple), period="3y", group_by="ticker",
+                       progress=False, auto_adjust=False, threads=True)
 
 @st.cache_data(ttl=300, show_spinner=False)
 def precios_actuales(watchlist_tuple):
@@ -643,12 +603,10 @@ def precios_actuales(watchlist_tuple):
     return precios
 
 def fetch_fund(item):
-    """Fundamentales + earnings para un candidato (corre en paralelo)."""
     sym = item["sym_original"]
     skip = any(x in sym for x in ['-USD','-F','=X','=F','.DE','.SW','.HK'])
     item["target"]=item["consenso"]=item["pe_ttm"]=item["pe_fwd"]="—"
     item["upside"]="—"; item["fv"]="—"; item["fv_up"]="—"; item["valor_pts"]=0
-    # earnings (para TODOS los candidatos, tambien los skip de fundamentales salvo cripto/fx/fut)
     d_prox, d_ult, exento = dias_a_earnings(sym)
     item["earn_prox"]=d_prox; item["earn_ult"]=d_ult; item["earn_exento"]=exento
     if skip: return item
@@ -686,7 +644,6 @@ def barrido_completo(watchlist_tuple, lookback):
         todos = list(ex.map(fetch_fund, resultados))
     for x in todos:
         x.setdefault("valor_pts", 0)
-    # Filtro de regimen: SPY < EMA50 -> castigar cuchillos (reversion sin DI+ bajo MA200)
     if not regimen_alcista():
         for x in todos:
             if x.get("tipo")=="Reversión" and x["pdi"] <= x["mdi"] and x["precio"] < x.get("ma200", x["precio"]):
@@ -694,10 +651,7 @@ def barrido_completo(watchlist_tuple, lookback):
     return todos
 
 # ======================================================================
-# ESCANER DE SOBREVENTA PURA — RSI (OSC) < UMBRAL, RADAR INDEPENDIENTE
-# Corre sobre los 290, NO exige señal CRH V5. Es solo un radar de nombres
-# muy sobrevendidos para vigilar/revisar a mano. Usa el MISMO RSI que el
-# motor (OSC simple 14-sum). Marca sano vs cuchillo con SOPORTE_SANO.
+# SOBREVENTA PURA — radar independiente
 # ======================================================================
 @st.cache_data(ttl=300, show_spinner=False)
 def escanear_sobreventa(watchlist_tuple, umbral=35):
@@ -712,66 +666,54 @@ def escanear_sobreventa(watchlist_tuple, umbral=35):
             if df is None or df.empty: continue
             df = df.dropna(subset=['Close','Volume']).copy()
             df = df[df['Volume'] > 0].copy()
-            if len(df) < 60: continue
-            C, H, L = df['Close'], df['High'], df['Low']; pc = C.shift(1)
-            # RSI = OSC simple (identico al motor CRH V5)
-            up=(C-pc).clip(lower=0).rolling(14).sum(); dn=(pc-C).clip(lower=0).rolling(14).sum()
-            osc=up/(up+dn).replace(0,np.nan)*100
-            rsi_now = float(osc.iloc[-1]) if not pd.isna(osc.iloc[-1]) else None
+            if len(df) < 260: continue
+            df.columns = [c.lower() for c in df.columns]
+            df = df[['open','high','low','close','volume']].astype(float)
+
+            r = crh(df)
+            f = r.iloc[-1]
+            rsi_now = float(f['OSC']) if pd.notna(f['OSC']) else None
             if rsi_now is None or rsi_now >= umbral: continue
-            # contexto minimo para distinguir rebote-sano de cuchillo
-            ma20=C.ewm(span=20,adjust=False).mean()
-            ma200=C.ewm(span=200,adjust=False).mean()
-            lmin=L.rolling(9).min(); hmax=H.rolling(9).max()
-            rsv=(C-lmin)/(hmax-lmin).replace(0,np.nan)*100
-            kval=rsv.ewm(alpha=1/3,adjust=False).mean(); dval=kval.ewm(alpha=1/3,adjust=False).mean()
-            jv=3*kval-2*dval; j_now=float(jv.iloc[-1]) if not pd.isna(jv.iloc[-1]) else None
-            tr=pd.concat([H-L,(H-pc).abs(),(L-pc).abs()],axis=1).max(axis=1)
-            hd=H-H.shift(1); ld=L.shift(1)-L
-            dmp=pd.Series(np.where((hd>0)&(hd>ld),hd,0.0),index=df.index).rolling(14).sum()
-            dmm=pd.Series(np.where((ld>0)&(ld>hd),ld,0.0),index=df.index).rolling(14).sum()
-            tr14=tr.rolling(14).sum().replace(0,np.nan)
-            pdi=dmp*100/tr14; mdi=dmm*100/tr14
-            adx=((pdi-mdi).abs()/(pdi+mdi).replace(0,np.nan)*100).rolling(9).mean()
-            adx_now=float(adx.iloc[-1]) if not pd.isna(adx.iloc[-1]) else 0.0
-            pdi_now=float(pdi.iloc[-1]) if not pd.isna(pdi.iloc[-1]) else 0.0
-            mdi_now=float(mdi.iloc[-1]) if not pd.isna(mdi.iloc[-1]) else 0.0
-            precio=float(C.iloc[-1])
-            ma200_now=float(ma200.iloc[-1]) if not pd.isna(ma200.iloc[-1]) else precio
-            ma20_now=float(ma20.iloc[-1]) if not pd.isna(ma20.iloc[-1]) else precio
-            ema200_baja=(len(df)>=201) and (float(ma200.iloc[-1])<float(ma200.iloc[-2]))
-            es_bajista_critico=(precio<ma200_now) and ema200_baja and (precio<ma20_now)
-            soporte_sano=not (es_bajista_critico or (adx_now>30 and mdi_now>pdi_now))
-            ret5=None
-            if len(C)>=6:
-                c5=float(C.iloc[-6]); ret5=(precio/c5-1)*100 if c5>0 else None
+
+            precio = float(f['close'])
+            ma200_now = float(f['MA200']) if pd.notna(f['MA200']) else precio
+            j_now = float(f['J_V']) if pd.notna(f['J_V']) else None
+            adx_now = float(f['ADX_V']) if pd.notna(f['ADX_V']) else 0.0
+            pdi_now = float(f['PDI']) if pd.notna(f['PDI']) else 0.0
+            mdi_now = float(f['MDI']) if pd.notna(f['MDI']) else 0.0
+
+            # SOPORTE_SANO no existe en V3, se calcula aqui solo para el radar
+            sano = not (bool(f['ES_BAJISTA_CRITICO']) or (adx_now > 30 and mdi_now > pdi_now))
+
+            ret5 = None
+            c = r['close']
+            if len(c) >= 6:
+                c5 = float(c.iloc[-6]); ret5 = (precio/c5-1)*100 if c5 > 0 else None
+
             res.append(dict(sym=sym, precio=precio, rsi=rsi_now, j=j_now, adx=adx_now,
-                            ret5=ret5, sano=soporte_sano, bajo_ma200=(precio<ma200_now)))
+                            ret5=ret5, sano=sano, bajo_ma200=(precio < ma200_now)))
         except Exception:
             continue
-    res.sort(key=lambda x: x["rsi"])   # mas sobrevendido primero
+    res.sort(key=lambda x: x["rsi"])
     return res
 
-# lookback de señal: cuantos dias hacia atras aceptar la señal fresca (1=solo hoy)
 LOOKBACK = 3
+UMBRAL_RSI = 35
 
-UMBRAL_RSI = 35   # sobreventa pura para el radar del final
-
-with st.spinner(f"Escaneando {len(WATCHLIST)} tickers con los gatillos del CRH V5..."):
+with st.spinner(f"Escaneando {len(WATCHLIST)} tickers con el motor CRH V3..."):
     todos = barrido_completo(tuple(WATCHLIST), LOOKBACK)
 _precios_hoy = precios_actuales(tuple(WATCHLIST))
 _sobreventa = escanear_sobreventa(tuple(WATCHLIST), UMBRAL_RSI)
 
 # ======================================================================
-# CONTROL DE BLACKOUT (post-filtro en vivo, no re-escanea)
+# BLACKOUT
 # ======================================================================
 dias_black = st.slider(
     "⏰ Blackout de earnings — sacar de COMPRAS los que reportan en ≤N días hábiles",
     min_value=0, max_value=5, value=3, step=1,
-    help="0 = desactivado. Tu diagnostico: GDDY y ambos FICO eran pre-earnings. El default 3 los saca."
+    help="0 = desactivado. GDDY y ambos FICO eran pre-earnings. El default 3 los saca."
 )
 
-# aplicar estado de earnings a cada candidato
 en_blackout, limpios = [], []
 for x in todos:
     bloquear, txt = estado_earnings(x.get("earn_prox"), x.get("earn_ult"), x.get("earn_exento", False), dias_black)
@@ -779,7 +721,7 @@ for x in todos:
     (en_blackout if bloquear else limpios).append(x)
 
 # ======================================================================
-# HISTORIAL (expander) — reutiliza infraestructura existente
+# HISTORIAL (expander)
 # ======================================================================
 def _precio_num_h(s):
     try: return float(str(s).replace("$","").replace(",","").strip())
@@ -817,27 +759,32 @@ with st.expander(_label, expanded=False):
             st.markdown('<div style="margin:10px 0;">'+titulo+tabla+'</div>', unsafe_allow_html=True)
 
 # ======================================================================
-# CALCULADORA DE GESTION (sin cambios de logica; lee de `todos`)
+# CALCULADORA DE GESTION
 # ======================================================================
 with st.expander("🧮 Calculadora de gestión (SL / TP / tamaño de posición)", expanded=False):
     st.markdown("""<div style='font-size:11px;color:#a0aec0;line-height:1.6;background:#0d1424;border:1px solid #1e3a5f;border-radius:8px;padding:10px 12px;margin-bottom:10px;'>
-<b style='color:#00d4ff'>Banda de volatilidad</b> = cuánto se mueve la acción; define el margen del Stop. Mismos cortes que el CRH V5 (STD 60 → 1.5/3.0).<br>
+<b style='color:#00d4ff'>Banda de volatilidad</b> = cuánto se mueve la acción; define el margen del Stop. Cortes del CRH V3 (STD 60 → 1.0/1.8).<br>
 🟦 <b>B1</b>: SL 1.3× ATR · TP1 2.0× · TP2 3.5× &nbsp; 🟨 <b>B2</b>: SL 1.5× · TP1 2.2× · TP2 4.0× &nbsp; 🟥 <b>B3</b>: SL 1.8-2.0× · TP1 2.8× · TP2 5.0×<br>
-<span style='color:#718096'>El deslizador va de 0.5 (ajustado) a 3.5 (amplio); el recomendado queda prefijado en la banda del activo.</span>
+<span style='color:#718096'>Si eliges un candidato del barrido, abajo verás además el STOP y TP1 <b>reales del sistema</b>.</span>
 </div>""", unsafe_allow_html=True)
     modo = st.radio("Modo", ["Desde candidato del barrido", "Manual (cualquier acción)"], horizontal=True, label_visibility="collapsed")
     _mapa = {x["sym_original"]: x for x in todos}; _syms = sorted(_mapa.keys())
-    sym_label=""; precio_actual=0.0; atr=0.0; banda_reco=2; _slider_key="nivel_riesgo_manual"
+    sym_label=""; precio_actual=0.0; atr=0.0; banda_reco=2; _slider_key="nivel_riesgo_manual"; _x_sel=None
     if modo == "Desde candidato del barrido":
         if not _syms:
             st.info("Sin candidatos hoy. Usa el modo Manual.")
         else:
             cc1, cc2 = st.columns([3,3])
             with cc1: sym_sel = st.selectbox("Ticker (candidato)", _syms)
-            x=_mapa[sym_sel]; sym_label=sym_sel; precio_actual=x["precio"]; atr=x.get("atr_abs",0) or 0
+            x=_mapa[sym_sel]; _x_sel=x; sym_label=sym_sel; precio_actual=x["precio"]; atr=x.get("atr_abs",0) or 0
             banda_reco=x.get("banda",2); _slider_key=f"nivel_riesgo_{sym_sel}"
             with cc2:
                 st.markdown("<div style='font-size:11px;color:#718096;padding-top:30px;'>Autocompletado: "+x.get("banda_txt","?")+" · ATR $"+f"{atr:.2f}"+" · actual $"+f"{precio_actual:.2f}"+"</div>", unsafe_allow_html=True)
+            if x.get("stop_sys") and x.get("tp1_sys"):
+                st.markdown("<div style='background:#0d1424;border:1px solid #1e3a5f;border-radius:8px;padding:8px 12px;margin:6px 0;font-size:12px;color:#a0aec0;'>"
+                    +"<b style='color:#00d4ff'>Niveles del sistema CRH</b> · STOP <b style='color:#ff4d6d'>$"+f"{x['stop_sys']:.2f}"+"</b> · TP1 <b style='color:#00e5a0'>$"+f"{x['tp1_sys']:.2f}"+"</b>"
+                    +" · en posición: "+("<b style='color:#00e5a0'>sí</b>" if x.get("is_long") else "<b style='color:#718096'>no</b>")
+                    +"</div>", unsafe_allow_html=True)
     else:
         m1,m2,m3 = st.columns([2,2,2])
         with m1: sym_label = st.text_input("Ticker", value="", placeholder="ej: AAPL")
@@ -903,11 +850,11 @@ n_mix=sum(1 for x in limpios if x["tipo"]=="Mixto")
 n_valor=sum(1 for x in limpios if x.get("valor_pts",0)>0)
 n_hoy=sum(1 for x in limpios if x["barras_desde"]==0)
 _reg_txt = "🟢 régimen alcista" if _alcista_ui else "🔴 régimen bajista (cuchillos −2)"
-st.markdown(f'<div style="text-align:center;color:var(--muted);font-size:12px;padding:8px 0 4px;letter-spacing:.05em;">✅ {len(WATCHLIST)} tickers · {len(limpios)} señales CRH V5 ({n_hoy} hoy) · 🟢 {n_mom} momentum · 🔵 {n_rev} reversión · 🟣 {n_pull} pullback · ⚪ {n_mix} mixto · 💎 {n_valor} valor · ⏰ {len(en_blackout)} en earnings · {_reg_txt}</div>', unsafe_allow_html=True)
-st.markdown(f'<div style="text-align:center;color:#4a5568;font-size:10px;padding:0 0 14px;letter-spacing:.04em;">🕑 escaneo {_sello} hora NY · señal fresca (≤{LOOKBACK}d) · gatillos idénticos al CRH V5 de Moomoo</div>', unsafe_allow_html=True)
+st.markdown(f'<div style="text-align:center;color:var(--muted);font-size:12px;padding:8px 0 4px;letter-spacing:.05em;">✅ {len(WATCHLIST)} tickers · {len(limpios)} señales CRH V3 ({n_hoy} hoy) · 🟢 {n_mom} momentum · 🔵 {n_rev} reversión · 🟣 {n_pull} pullback · ⚪ {n_mix} mixto · 💎 {n_valor} valor · ⏰ {len(en_blackout)} en earnings · {_reg_txt}</div>', unsafe_allow_html=True)
+st.markdown(f'<div style="text-align:center;color:#4a5568;font-size:10px;padding:0 0 14px;letter-spacing:.04em;">🕑 escaneo {_sello} hora NY · señal fresca (≤{LOOKBACK}d) · motor crh.py verificado contra el .ftindex</div>', unsafe_allow_html=True)
 
 # ======================================================================
-# TABLA HTML (ordenable) — columnas adaptadas al CRH V5
+# TABLA HTML ORDENABLE
 # ======================================================================
 import re as _re2
 _TABLA_N=[0]
@@ -953,7 +900,7 @@ def _color(col, val):
         return "color:#4a5568"
     if col=="Cuándo":
         return "color:#00e5a0;font-weight:600" if s=="hoy" else "color:#718096"
-    if col=="ATR": return "color:#a0aec0"
+    if col in ("ATR","Stop","TP1"): return "color:#a0aec0"
     return ""
 
 def _sortval(col, raw, idx):
@@ -967,25 +914,28 @@ def _sortval(col, raw, idx):
         return {"Momentum":0,"Mixto":1,"Pullback":2,"Reversión":3}.get(s.strip(),9)
     if col=="Earn":
         m=_re2.search(r'-?\d+', s); return float(m.group()) if m else 999
-    if col=="ATR":
-        try: return float(s.replace("$","")) 
+    if col in ("ATR","Stop","TP1"):
+        try: return float(s.replace("$",""))
         except: return -1
     m=_re2.search(r'-?\d+\.?\d*', s.replace(",",""))
     return float(m.group()) if m else -999999
 
 def tabla_html(lista):
     _TABLA_N[0]+=1; tid=f"tw{_TABLA_N[0]}"
-    cols=["#","Ticker","Conv","Tipo","Gatillos","Banda","Cuándo","Earn","Precio","ATR",
+    cols=["#","Ticker","Conv","Tipo","Gatillos","Banda","Cuándo","Earn","Precio","Stop","TP1","ATR",
           "Fair Value","vs FV","Target 12M","Upside","RSI","J","ADX"]
     head="".join(f'<th>{c}<span class="ar"></span></th>' for c in cols)
     filas=[]
     for i,x in enumerate(lista,1):
         cuando="hoy" if x["barras_desde"]==0 else ("ayer" if x["barras_desde"]==1 else f"-{x['barras_desde']}d")
         vp=x.get("valor_pts",0); val_badge=" 💎💎" if vp==2 else (" 💎" if vp==1 else "")
+        stop_txt = f"${x['stop_sys']:.2f}" if x.get("stop_sys") else "—"
+        tp1_txt  = f"${x['tp1_sys']:.2f}" if x.get("tp1_sys") else "—"
         celdas={"#":str(i),"Ticker":f'<a class="tk" href="{finviz_url(x["sym"])}" target="_blank">{x["sym"]}</a>',
                 "Conv":str(x.get("score","")),"Tipo":x.get("tipo","—"),
                 "Gatillos":x.get("trig_txt","")+val_badge,"Banda":x.get("banda_txt","—"),
-                "Cuándo":cuando,"Earn":x.get("earn_txt","—"),"Precio":x["precio_str"],"ATR":x.get("atr_str","—"),
+                "Cuándo":cuando,"Earn":x.get("earn_txt","—"),"Precio":x["precio_str"],
+                "Stop":stop_txt,"TP1":tp1_txt,"ATR":x.get("atr_str","—"),
                 "Fair Value":x.get("fv","—"),"vs FV":x.get("fv_up","—"),"Target 12M":x.get("target","—"),
                 "Upside":x.get("upside","—"),"RSI":x["rsi_str"],"J":x["j_str"],"ADX":x["adx_str"]}
         tds=[]
@@ -997,7 +947,7 @@ def tabla_html(lista):
     return f'<div class="tw"><table id="{tid}"><thead><tr>'+head+'</tr></thead><tbody>'+"".join(filas)+'</tbody></table></div>'
 
 # ======================================================================
-# COMPRAS CRH V5 — bucketed por convicción
+# COMPRAS CRH V3
 # ======================================================================
 def _cambios_vs_ayer():
     foto_prev=None
@@ -1018,13 +968,14 @@ if _fp and (_nv or _sb):
     if _sb: partes.append('<span style="color:#00d4ff;font-weight:600">⬆ Subieron:</span> '+", ".join(_sb))
     st.markdown(f'<div style="background:#0d1424;border:1px solid #1e3a5f;border-radius:10px;padding:10px 14px;margin:8px 0 14px;font-size:12px;color:#a0aec0;">Cambios vs {_fp}: '+" &nbsp;·&nbsp; ".join(partes)+'</div>', unsafe_allow_html=True)
 
-st.markdown('<div class="sec sec-os">🎯 COMPRAS CRH V5 — SEÑAL FRESCA POR CONVICCIÓN</div>', unsafe_allow_html=True)
+st.markdown('<div class="sec sec-os">🎯 COMPRAS CRH V3 — SEÑAL FRESCA POR CONVICCIÓN</div>', unsafe_allow_html=True)
 st.markdown("""<div class="glosario">
-<b>Motor = CRH V5</b>: los mismos 9 gatillos de tu indicador de Moomoo, con gates de banda (1.5/3.0) y contexto (SOPORTE_SANO, PERMITE_MOM, bajista crítico). Solo aparece el <b>día que la señal dispara</b> (fresca, ≤{lb}d). &nbsp;·&nbsp;
-<b>Gatillos</b>: PULL (pullback MA50) · IMPU (ruptura+ADX) · BOLL (banda inf.) · SUELO (OSC&lt;35+piso) · MACD (cruce) · EARLY (KDJ temprano) · CONT (continuación) · REB200 (rebote MA200) · REC (recupera MA20) &nbsp;·&nbsp;
-<b>Tipo</b>: 🟢Momentum · 🔵Reversión · 🟣Pullback (define cómo gestionar) &nbsp;·&nbsp;
-<b>Conv (0-5)</b>: confluencia (2+ gatillos) + DI+ manda + volumen ≥1.2× + banda limpia. <b>Es solo para ordenar</b>; el filtro de calidad son los gates. &nbsp;·&nbsp;
-<b>ATR</b> $ (14d Wilder) para SL/TP · <b>💎VALOR</b> solo visual, NO suma · <b>Earn</b>: ⏰ reporta pronto (fuera) · 🆕 reportó hace poco · ✓ despejado
+<b>Motor = crh.py (CRH V3)</b>: los 8 gatillos de tu indicador de Moomoo, con gating de banda (cortes 1.0/1.8). Verificado contra el .ftindex. Solo aparece el <b>día que la señal dispara</b> (fresca, ≤{lb}d). &nbsp;·&nbsp;
+<b>Gatillos</b>: PULL (pullback MA50) · IMPU (ruptura+ADX) · BOLL (banda inf.) · SUELO (OSC&lt;35+piso) · MACD (cruce) · EARLY (KDJ temprano) · CONT (continuación) · REB200 (rebote MA200) &nbsp;·&nbsp;
+<b>Tipo</b>: 🟢Momentum · 🔵Reversión · 🟣Pullback &nbsp;·&nbsp;
+<b>Conv (0-5)</b>: confluencia (2+ gatillos) + DI+ manda + volumen ≥1.2× + banda limpia. <b>Solo para ordenar.</b> &nbsp;·&nbsp;
+<b>Stop / TP1</b>: niveles <b>reales del sistema</b> (stop multicapa y TP1 por banda) &nbsp;·&nbsp;
+<b>ATR</b> $ (14d Wilder) · <b>💎VALOR</b> solo visual · <b>Earn</b>: ⏰ reporta pronto · 🆕 reportó hace poco · ✓ despejado
 </div>""".replace("{lb}", str(LOOKBACK)), unsafe_allow_html=True)
 
 def bucket(titulo, lista, color):
@@ -1042,18 +993,18 @@ bucket("🥇 CONVICCIÓN 4 — MUY FUERTE", c4, "#00d4ff")
 bucket("🥈 CONVICCIÓN 3 — FUERTE", c3, "#00d4ff")
 bucket("🥉 CONVICCIÓN ≤2 — VIGILANCIA", c2, "#b48cff")
 if not limpios:
-    st.info("Ningún ticker disparó una señal CRH V5 fresca en los últimos días. Esto es normal y esperado: el screener es de alta precisión, no de volumen. Mejor 0 buenas que 60 malas.")
+    st.info("Ningún ticker disparó una señal CRH V3 fresca en los últimos días. Es normal: el screener es de precisión, no de volumen.")
 
 # ======================================================================
-# EN VENTANA DE EARNINGS (blackout) — mirar, no entrar aún
+# BLACKOUT DE EARNINGS
 # ======================================================================
 if en_blackout:
     st.markdown('<div class="sec sec-ea">⏰ EN VENTANA DE EARNINGS — NO ENTRAR (BLACKOUT)</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="glosario">Estos <b>dispararon una señal CRH V5 válida</b> pero reportan resultados en ≤{dias_black} días hábiles. Aquí es donde el screener viejo pisaba las minas (GDDY −19.6%, FICO −16/−18%). Espera al reporte; si sobrevive y vuelve a disparar, entra entonces.</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="glosario">Estos <b>dispararon una señal CRH V3 válida</b> pero reportan resultados en ≤{dias_black} días hábiles. Espera al reporte; si sobrevive y vuelve a disparar, entra entonces.</div>', unsafe_allow_html=True)
     st.markdown(tabla_html(sorted(en_blackout, key=lambda x:(x.get("earn_prox") or 99, -x["score"]))), unsafe_allow_html=True)
 
 # ======================================================================
-# SOBREVENTA PURA — RSI < UMBRAL (radar independiente del CRH V5)
+# SOBREVENTA PURA
 # ======================================================================
 def _sv_ret_style(v):
     if v is None: return "color:#4a5568"
@@ -1085,18 +1036,18 @@ def tabla_sobreventa(lista):
         )
     return '<div class="tw"><table><thead><tr>'+head+'</tr></thead><tbody>'+"".join(filas)+'</tbody></table></div>'
 
-st.markdown('<div class="sec" style="color:#ff4d6d;border-bottom-color:#ff4d6d;">📉 SOBREVENTA PURA — RSI &lt; 35 (RADAR, NO ES SEÑAL CRH V5)</div>', unsafe_allow_html=True)
+st.markdown('<div class="sec" style="color:#ff4d6d;border-bottom-color:#ff4d6d;">📉 SOBREVENTA PURA — RSI &lt; 35 (RADAR, NO ES SEÑAL CRH)</div>', unsafe_allow_html=True)
 st.markdown(f"""<div class="glosario">
-Escaneo crudo de sobreventa sobre los {len(WATCHLIST)} tickers, <b>independiente de los gatillos CRH V5</b>. Aquí NO hay confirmación de giro ni gates: es solo "quién está muy castigado ahora mismo" para revisar a mano. RSI = OSC simple (el mismo del motor). &nbsp;·&nbsp;
-<b>🟢 sano</b> = pasa SOPORTE_SANO (no está en caída libre ni bajista crítico) → candidato a que dispare un SUELO/BOLL/EARLY del CRH V5 si gira. &nbsp;·&nbsp;
-<b>🔴 cuchillo</b> = bajista estructural o ADX&gt;30 con vendedores dominando → sobreventa que puede seguir cayendo; no comprar por comprar.
+Escaneo crudo de sobreventa sobre los {len(WATCHLIST)} tickers, <b>independiente de los gatillos</b>. Aquí NO hay confirmación de giro: es solo "quién está muy castigado ahora mismo" para revisar a mano. RSI = OSC simple, el mismo del motor. &nbsp;·&nbsp;
+<b>🟢 sano</b> = no está en caída libre ni bajista crítico → candidato a que dispare un SUELO/BOLL/EARLY si gira. &nbsp;·&nbsp;
+<b>🔴 cuchillo</b> = bajista estructural o ADX&gt;30 con vendedores dominando → puede seguir cayendo.
 </div>""", unsafe_allow_html=True)
 if _sobreventa:
     _sanos=sum(1 for x in _sobreventa if x.get("sano"))
     st.markdown(f'<div style="font-size:11px;color:#718096;margin:2px 0 8px;">{len(_sobreventa)} nombres con RSI &lt; {UMBRAL_RSI} · 🟢 {_sanos} con soporte sano · 🔴 {len(_sobreventa)-_sanos} cuchillos · ordenado del más sobrevendido</div>', unsafe_allow_html=True)
     st.markdown(tabla_sobreventa(_sobreventa), unsafe_allow_html=True)
 else:
-    st.info(f"Ningún ticker con RSI < {UMBRAL_RSI} ahora mismo. En mercado alcista es normal que la sobreventa escasee.")
+    st.info(f"Ningún ticker con RSI < {UMBRAL_RSI} ahora mismo.")
 
 # ======================================================================
 # JS DE ORDENAMIENTO
@@ -1129,4 +1080,4 @@ let intentos=0; const timer=setInterval(()=>{activar(); intentos++; if(intentos>
 </script>
 """, height=0)
 
-st.markdown('<p class="footer">Screener CRH V5 · radar de la gran lista · señal = gatillos idénticos al indicador de Moomoo · solo educativo · no es asesoría</p>', unsafe_allow_html=True)
+st.markdown('<p class="footer">Screener CRH V3 · motor crh.py verificado contra el .ftindex de Moomoo · solo educativo · no es asesoría</p>', unsafe_allow_html=True)
