@@ -1081,3 +1081,9 @@ let intentos=0; const timer=setInterval(()=>{activar(); intentos++; if(intentos>
 """, height=0)
 
 st.markdown('<p class="footer">Screener CRH V3 · motor crh.py verificado contra el .ftindex de Moomoo · solo educativo · no es asesoría</p>', unsafe_allow_html=True)
+# ---------- APALANCADOS (modulo aparte, no toca el screener) ----------
+try:
+    from apalancados import render_apalancados
+    render_apalancados()
+except Exception as _e:
+    st.caption(f"Sección de apalancados no disponible: {_e}")
